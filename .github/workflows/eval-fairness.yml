@@ -1,0 +1,89 @@
+name: "Fairness eval scorecard (reusable, opt-in)"
+
+# Opt-in bias/fairness gate (UAE Decree-Law 34/2023 / ISO theme 8).
+# - Runs when .agent-rfc/fixtures/fairness_evals.json exists OR framework
+#   fixtures/fairness_evals_base.json is available to the runner.
+# - FAIRNESS_EVALS=required (repo variable) or inputs.fairness_mode=required
+#   → hard-fail below threshold
+# - unset / warn → continue-on-error (warn-only)
+# Threshold: FAIRNESS_FAIL_BELOW from tenant .env / repo var (default 0.80).
+# CLI --fail-below overrides when set.
+
+on:
+  workflow_call:
+    inputs:
+      fairness_mode:
+        description: "warn (default) or required"
+        type: string
+        required: false
+        default: "warn"
+
+jobs:
+  eval-fairness:
+    name: "Fairness eval scorecard"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: ${{ inputs.fairness_mode != 'required' && vars.FAIRNESS_EVALS != 'required' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          # Keyed on THIS file, not the default **/requirements.txt|pyproject.toml:
+          # the install below is a fixed list, and a Go or TS tenant has neither
+          # file, so the default glob hard-failed setup-python before anything
+          # ran (found onboarding scratch ts-react + go tenants).
+          cache-dependency-path: .github/workflows/eval-fairness.yml
+
+      - name: Install eval dependencies
+        run: |
+          pip install \
+            "arize-phoenix>=4.0" \
+            "openinference-instrumentation-openai>=0.1.4" \
+            "opentelemetry-sdk>=1.20" \
+            "opentelemetry-exporter-otlp-proto-http>=1.20" \
+            "networkx>=3.0" \
+            "tiktoken>=0.5" \
+            "httpx>=0.25" \
+            "langchain-core>=0.2" \
+            "langchain-openai>=0.1" \
+            "langchain-anthropic>=0.1"
+
+      - name: Detect fairness fixtures
+        id: detect
+        run: |
+          if [ -f .agent-rfc/fixtures/fairness_evals.json ] || [ -f fixtures/fairness_evals_base.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No fairness fixtures — skipping suite."
+          fi
+
+      - name: Run fairness eval scorecard
+        if: steps.detect.outputs.present == 'true'
+        env:
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY:           ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          AGENT_MODEL_ARCHITECT:  ${{ secrets.AGENT_MODEL_ARCHITECT }}
+          AGENT_MODEL_COMPLEX:    ${{ secrets.AGENT_MODEL_COMPLEX }}
+          AGENT_JUDGE_MODEL:      ${{ secrets.AGENT_JUDGE_MODEL }}   # unset -> the `judge` role in models.yaml
+          AGENT_PHOENIX_ENDPOINT: ${{ secrets.AGENT_PHOENIX_ENDPOINT || '' }}
+          AGENT_OWNER_ID:         ${{ secrets.AGENT_OWNER_ID || 'ci@agenticframework' }}
+          FAIRNESS_FAIL_BELOW:    ${{ vars.FAIRNESS_FAIL_BELOW || '0.80' }}
+          FAIRNESS_EVALS:         ${{ vars.FAIRNESS_EVALS || inputs.fairness_mode || 'warn' }}
+        # Threshold from FAIRNESS_FAIL_BELOW (.env / repo var); do not pass --fail-below
+        run: python3 scripts/run-evals.py --suite fairness
+
+      - name: Upload fairness eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fairness-eval-results-${{ github.run_id }}
+          path: .agent-rfc/fixtures/fairness_eval_results.json
+          if-no-files-found: ignore

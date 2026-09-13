@@ -1,0 +1,195 @@
+# Tenant-scoped CD — applies to THIS repository only.
+# tenant.id: agentsmith-scratch-ts-react-pnpm
+# Do not reference org-level shared secrets beyond this tenant's GitHub Environment.
+
+name: "CD: Production Deploy"
+
+# Runs after CI succeeds on a push to main (after a reviewed develop → main promotion PR merges).
+# Eval fail gate (below 0.80) + smoke test. No continue-on-error. Smoke failure
+# fails the job and invokes the platform rollback hook.
+
+# GATED ON CI. This used to be `on: push`, running in PARALLEL with CI with
+# nothing making it wait: AqlaarTeleologyStudio's "CD: Production Deploy"
+# went green on commits whose CI failed (a no-op only because DEPLOY_COMMAND was
+# unset — set it, and a red commit ships). Now it runs when the stack's CI
+# workflow COMPLETES for a push to main, and the job proceeds only if that run
+# succeeded, deploying exactly the commit CI validated (head_sha), not whatever
+# main points at by the time this starts.
+#
+# `workflows:` names all three stack CIs; a tenant has one, and GitHub ignores
+# names that match no workflow. Renaming your CI workflow's `name:` silently
+# disconnects this — keep them in step.
+on:
+  workflow_run:
+    workflows: ["CI: Python/FastAPI Guardrails", "CI: TypeScript/React Guardrails", "CI: Go Guardrails"]
+    types: [completed]
+    branches: ["main"]
+
+concurrency:
+  group: cd-production-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false   # Never cancel in-flight deploys
+
+jobs:
+  deploy:
+    name: "Deploy to Production"
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      # write, not read: the "Open PR for fixture updates" step below pushes
+      # a branch and opens a PR with the same GITHUB_TOKEN — read-only here
+      # would silently break that step on every production deploy that has
+      # HITL feedback to sync.
+      contents: write
+      pull-requests: write
+      packages: write   # only used if a Dockerfile is present — see build-push-ghcr
+
+    env:
+      ENVIRONMENT: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # ── GCP auth (optional — skips when neither WIF nor SA key is configured) ─
+      # Must run before build-push-ghcr when pushing to Artifact Registry, and
+      # before the deploy step when using gcloud/kubectl. Sets ADC on the runner
+      # so any subsequent step calling google.auth.default() is authenticated.
+      # See OPERATIONS.md §4 (GCP deployment specifics) for one-time setup instructions.
+      - name: "Authenticate to GCP"
+        uses: ./.github/actions/gcp-auth
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # ── Containerize + push to GHCR (optional — skips if no Dockerfile) ────
+      # ⚠️  Cloud Run deployments: Cloud Run rejects GHCR images. You must
+      # re-push to Artifact Registry before deploying. See
+      # .github/workflows/cd-portal.yml for the complete AR re-push + digest
+      # promotion pattern used by the AgentSmith Ops Portal.
+      - name: "Build & push container image"
+        id: image
+        uses: ./.github/actions/build-push-ghcr
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          # Keyed on THIS file, not the default **/requirements.txt|pyproject.toml:
+          # the install below is a fixed list, and a Go or TS tenant has neither
+          # file, so the default glob hard-failed setup-python before anything
+          # ran (found onboarding scratch ts-react + go tenants).
+          cache-dependency-path: .github/workflows/cd-production.yml
+
+      - name: Install framework dependencies
+        run: |
+          pip install \
+            "arize-phoenix>=4.0" \
+            "openinference-instrumentation-openai>=0.1.4" \
+            "opentelemetry-sdk>=1.20" \
+            "opentelemetry-exporter-otlp-proto-http>=1.20" \
+            "networkx>=3.0" \
+            "tiktoken>=0.5" \
+            "httpx>=0.25" \
+            "langchain-core>=0.2" \
+            "langchain-openai>=0.1" \
+            "langchain-anthropic>=0.1"
+
+      # ── Deploy to production. Set the DEPLOY_COMMAND secret on this
+      # tenant's GitHub Environment to wire in your platform — no workflow
+      # YAML edit needed. Unset = no-op placeholder (OPERATIONS.md "Wire
+      # your platform").
+      - name: "Deploy to production"
+        uses: ./.github/actions/deploy-placeholder
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        with:
+          deploy_command: ${{ secrets.DEPLOY_COMMAND }}
+          environment_label: production
+
+      # ── Post-deploy: sync HITL feedback from Phoenix ───────────────────────
+      - name: "Sync Phoenix annotations → golden dataset"
+        env:
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY:           ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          AGENT_MODEL_ARCHITECT:  ${{ secrets.AGENT_MODEL_ARCHITECT }}
+          AGENT_MODEL_COMPLEX:    ${{ secrets.AGENT_MODEL_COMPLEX }}
+          AGENT_JUDGE_MODEL:      ${{ secrets.AGENT_JUDGE_MODEL }}   # unset -> the `judge` role in models.yaml
+          AGENT_PHOENIX_ENDPOINT: ${{ secrets.AGENT_PHOENIX_ENDPOINT }}
+          AGENT_OWNER_ID:         ${{ secrets.AGENT_OWNER_ID || 'cd@agenticframework' }}
+        run: |
+          python3 scripts/sync-ui-feedback.py || echo "⚠️  Phoenix sync skipped (offline or no annotations)"
+
+      # ── Open PR for updated golden dataset (never push directly to main) ───
+      - name: "Open PR for fixture updates (if changed)"
+        run: |
+          git config user.name  "AgentSmith CD Bot"
+          git config user.email "bot@agenticframework.io"
+          BRANCH="bot/sync-evals-$(date +%s)"
+          git checkout -b "$BRANCH"
+          git add \
+            .agent-rfc/fixtures/golden_evals.json \
+            .agent-rfc/fixtures/custom_judge_criteria.json \
+            .agent-rfc/fixtures/sync_state.json || true
+          if git diff --cached --quiet; then
+            echo "No fixture changes to commit."
+          else
+            git commit -m "feat(evals): sync HITL feedback from production"
+            git push origin "$BRANCH"
+            gh pr create \
+              --title "sync evals: HITL feedback from production" \
+              --body "Auto-generated by CD workflow. CI must pass before merge." \
+              --base main
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Redaction compliance — production profile must scrub + truncate ────
+      - name: "Trace redaction compliance check"
+        env:
+          ENVIRONMENT: production
+        run: python3 scripts/verify_system.py --check-redaction
+
+      # ── Sync history to the Ops Portal (optional — skips silently if the
+      # secrets below aren't configured for this tenant's GitHub Environment) ──
+      - name: "Sync history to Ops Portal"
+        env:
+          OPS_PORTAL_URL:        ${{ secrets.OPS_PORTAL_URL }}
+          OPS_PORTAL_SYNC_TOKEN: ${{ secrets.OPS_PORTAL_SYNC_TOKEN }}
+        run: python3 scripts/sync-portal-history.py
+
+      # ── Post-deploy eval smoke test — BLOCKS on failure, no continue-on-error
+      - name: "Post-deploy eval smoke test"
+        env:
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY:           ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          AGENT_MODEL_ARCHITECT:  ${{ secrets.AGENT_MODEL_ARCHITECT }}
+          AGENT_MODEL_COMPLEX:    ${{ secrets.AGENT_MODEL_COMPLEX }}
+          AGENT_JUDGE_MODEL:      ${{ secrets.AGENT_JUDGE_MODEL }}   # unset -> the `judge` role in models.yaml
+          AGENT_PHOENIX_ENDPOINT: ${{ secrets.AGENT_PHOENIX_ENDPOINT }}
+          AGENT_OWNER_ID:         ${{ secrets.AGENT_OWNER_ID || 'cd@agenticframework' }}
+        run: python3 scripts/run-evals.py --fail-below 0.80
+        # No continue-on-error — failure must block or trigger rollback
+
+      - name: "Rollback on smoke failure"
+        if: failure()
+        uses: ./.github/actions/rollback-notify
+        with:
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          teams_webhook_url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          rollback_command: ${{ secrets.ROLLBACK_COMMAND }}
+          environment_label: production
+          failure_context: "Post-deploy eval smoke test failed below 0.80"

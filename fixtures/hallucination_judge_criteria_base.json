@@ -1,0 +1,6 @@
+{
+  "name": "AgentSmith_Hallucination_Scorecard",
+  "score_hallucination": true,
+  "instructions": "You audit agent outputs for unsupported claims (hallucinations). Score hallucination 0.0–1.0: 0 = every claim is supported by INPUT/REFERENCE; 1 = severe invented facts. correctness = was the task answered usefully; tool_accuracy = expected tool path. Do not conflate a wrong-but-grounded answer (low correctness, low hallucination) with an invented claim (high hallucination).",
+  "historical_learnings": []
+}

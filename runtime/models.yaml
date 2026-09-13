@@ -1,0 +1,260 @@
+# runtime/models.yaml — Framework default model registry (§29).
+#
+# TWO BLOCKS, because "which models exist" and "which role uses which" are
+# different questions:
+#
+#   catalog:   every model REFERENCE the framework knows how to reach —
+#              local and closed-weight alike. Presence here costs nothing and
+#              routes nothing.
+#   profiles:  role → catalog alias bindings. A profile is a complete routing
+#              set; switching profile switches every role at once.
+#
+# The previous flat shape conflated the two, so a closed-weight model could
+# only be *present* by being *wired in*. Every cloud entry therefore lived
+# commented out: readable by a human, invisible to the code, and unusable
+# without editing YAML. They are now first-class entries that the default
+# profile simply does not bind.
+#
+# SELECTING A PROFILE
+#   AGENT_MODEL_PROFILE=<name>   explicit, wins over everything
+#   AI_STACK_MODE=<name>         what `ai-mode-local` / `ai-mode-hybrid` export
+#   default_profile below        fallback
+# `ai-mode-hybrid` previously announced "Claude + cost routing" while changing
+# nothing about model selection — nothing in the registry path read the mode.
+# It now selects the `hybrid` profile.
+#
+# api_format vs provider — WHO hosts a model and WHAT SHAPE it speaks are
+# independent. `provider` picks the host, credential and (for cloud-native
+# providers) the adapter; `api_format` picks the request/response envelope.
+# They usually agree, so `api_format` is optional. OpenRouter is the case that
+# forces the distinction: it fronts Claude, Gemini and Llama behind ONE
+# OpenAI-compatible endpoint, so a Claude served that way speaks
+# `openai_chat`, not `anthropic_messages`.
+#   api_format: openai_chat         chat/completions (default for most)
+#   api_format: anthropic_messages  /v1/messages, system hoisted out
+#
+# Per-entry fields (all optional unless noted):
+#   id             the provider's own name for the model. Defaults to the
+#                  catalog KEY, so only needed when they differ — the normal
+#                  case for OpenRouter's namespaced ids.
+#   endpoint       base URL; ${VAR} expanded. Required for provider: ollama.
+#   api_key_env    env var holding the key. Defaults per provider.
+#   cost_per_*     used by budget reservation and the spend cap. A wrong zero
+#                  makes a frontier model read as free.
+#
+# Cloud-native providers (vertex_ai, azure_openai, bedrock, huawei_modelarts)
+# need their own auth and envelope, handled by a CloudProviderAdapter in
+# runtime/provider_dispatch.py. Their extra fields (project/region/publisher,
+# resource/deployment/api_version, url_template, path_template) are documented
+# in that module's adapter docstrings. Mock-tested: all four. Live-verified
+# against a real account: vertex_ai only (project agentsmith-500916,
+# 2026-06-29) — GCC regions me-central1 (Doha) / me-central2 (Dammam) were
+# tested and do NOT serve gemini-2.5-flash; us-central1, europe-west1,
+# europe-west4 and asia-south1 do. Verify before pinning a GCC region.
+#
+# Tenants may still use the flat `models:` shape — both are supported and the
+# loader flattens either to the same {role: cfg} map.
+
+default_profile: local
+
+# ── CATALOG — model references ───────────────────────────────────────────────
+catalog:
+
+  # ── Local (Ollama) — zero cost, nothing leaves the machine ────────────────
+  # Pull them all with: ollama pull $(ai-stack-required-models)
+  qwen2.5:
+    provider: ollama
+    endpoint: "${OLLAMA_BASE_URL}/v1"
+    cost_per_input_token: 0
+    cost_per_output_token: 0
+  "llama3.2:3b":
+    provider: ollama
+    endpoint: "${OLLAMA_BASE_URL}/v1"
+    cost_per_input_token: 0
+    cost_per_output_token: 0
+  "falcon3:3b":
+    provider: ollama
+    endpoint: "${OLLAMA_BASE_URL}/v1"
+    cost_per_input_token: 0
+    cost_per_output_token: 0
+  smollm2:
+    provider: ollama
+    endpoint: "${OLLAMA_BASE_URL}/v1"
+    cost_per_input_token: 0
+    cost_per_output_token: 0
+
+  # ── Anthropic (direct) ────────────────────────────────────────────────────
+  claude-opus-4-8:
+    provider: anthropic
+    cost_per_input_token: 0.000003
+    cost_per_output_token: 0.000015
+  claude-sonnet-4-6:
+    provider: anthropic
+    cost_per_input_token: 0.000003
+    cost_per_output_token: 0.000015
+
+  # ── OpenAI (direct) ───────────────────────────────────────────────────────
+  gpt-4o:
+    provider: openai
+    cost_per_input_token: 0.0000025
+    cost_per_output_token: 0.00001
+
+  # ── Groq — cheap/fast OpenAI-compatible tier ──────────────────────────────
+  #
+  # DECOMMISSIONED 2026-08-17 — DO NOT BIND A ROLE TO THIS.
+  #
+  # Groq retired its entire Llama family; this id returns HTTP 404
+  # model_not_found on every call. Kept listed because the catalog is an OFFER
+  # ("stay available to any tenant that wants them", below) and an entry that
+  # simply vanishes tells a tenant reading an older doc nothing about why.
+  #
+  # It is worth being loud here rather than only in the profile comment that
+  # replaced it, because of how this failed the first time: on a judged gate a
+  # 404 is an infrastructure failure, so run-evals reports NO VERDICT and exits
+  # 0. Nothing went red. KYC Sentinel's suites graded nothing for several days
+  # while CI stayed green. The cost figures below are what make this dangerous
+  # to leave unmarked — they read as a live, cheap option.
+  #
+  # Same weights, reachable: `openrouter-llama-70b`
+  # (meta-llama/llama-3.3-70b-instruct) via OpenRouter.
+  llama-3.3-70b-versatile:
+    provider: groq
+    decommissioned: true
+    cost_per_input_token: 0.00000059
+    cost_per_output_token: 0.00000079
+
+  # ── xAI ───────────────────────────────────────────────────────────────────
+  grok-4:
+    provider: xai
+    cost_per_input_token: 0.000003
+    cost_per_output_token: 0.000015
+
+  # ── Google AI Studio (api key). NOT vertex_ai, which is service-account
+  #    OAuth — an AI Studio key will not authenticate there, or vice versa.
+  gemini-2.5-pro:
+    provider: google_ai
+    cost_per_input_token: 0.00000125
+    cost_per_output_token: 0.00001
+  gemini-3-flash-preview:
+    provider: google_ai
+    cost_per_input_token: 0.0000003
+    cost_per_output_token: 0.0000025
+    # A THINKING model: a trivial prompt spent ~111 hidden reasoning tokens,
+    # so a small max_tokens returns empty content. Also a PREVIEW model — its
+    # behaviour can change without notice and move any threshold calibrated
+    # against it.
+
+  # ── OpenRouter — one OpenAI-compatible endpoint, many vendors ─────────────
+  # The reason `api_format` exists separately from `provider`: these ARE
+  # Claude and Gemini, but reached in OpenAI chat shape. Ids are namespaced,
+  # hence the explicit `id` on each entry.
+  openrouter-claude-sonnet:
+    id: anthropic/claude-sonnet-4.5
+    provider: openrouter
+    api_format: openai_chat
+    cost_per_input_token: 0.000003
+    cost_per_output_token: 0.000015
+  openrouter-gemini-pro:
+    id: google/gemini-2.5-pro
+    provider: openrouter
+    api_format: openai_chat
+    cost_per_input_token: 0.00000125
+    cost_per_output_token: 0.00001
+  openrouter-llama-70b:
+    id: meta-llama/llama-3.3-70b-instruct
+    provider: openrouter
+    api_format: openai_chat
+    cost_per_input_token: 0.00000059
+    cost_per_output_token: 0.00000079
+
+  # Open-weight models via OpenRouter. Ids VERIFIED against
+  # https://openrouter.ai/api/v1/models on 2026-08-02 — two of the three had
+  # no `:free` variant and are pinned to their real ids rather than to a
+  # suffix that 404s at call time.
+  openrouter-gpt-oss-120b:
+    id: openai/gpt-oss-120b        # NOTE: no `:free` variant exists
+    provider: openrouter
+    api_format: openai_chat
+    cost_per_input_token: 0.000000037    # $0.037 / M tokens
+    cost_per_output_token: 0.00000017    # $0.17  / M tokens
+  openrouter-gpt-oss-20b:
+    id: openai/gpt-oss-20b:free    # genuinely free tier — verified $0/$0
+    provider: openrouter
+    api_format: openai_chat
+    cost_per_input_token: 0
+    cost_per_output_token: 0
+  openrouter-hy3:
+    id: tencent/hy3                # NOTE: no `:free` variant exists
+    provider: openrouter
+    api_format: openai_chat
+    cost_per_input_token: 0.000000132    # $0.132 / M tokens
+    cost_per_output_token: 0.000000528   # $0.528 / M tokens
+
+  # ── GCP Vertex AI (service-account OAuth) ─────────────────────────────────
+  vertex-gemini-flash:
+    id: gemini-2.5-flash
+    provider: vertex_ai
+    project: "${GCP_PROJECT_ID}"   # per-tenant; no project id is committed here
+    region: us-central1            # see the GCC-region note in the header
+    cost_per_input_token: 0.0000003
+    cost_per_output_token: 0.0000025
+
+# ── PROFILES — role bindings ─────────────────────────────────────────────────
+#
+# A role may bind with a bare alias, or a mapping carrying per-role extras
+# (`degrade_to`, `fail_below`, `api_key_env`).
+profiles:
+
+  # DEFAULT. Every role local: no prompt leaves the machine, no call can be
+  # billed, and the degrade ladder only ever picks a SMALLER LOCAL model
+  # rather than walking out across a trust boundary.
+  local:
+    architect: {use: qwen2.5, degrade_to: developer}
+    developer: {use: "llama3.2:3b", degrade_to: validator}
+    validator: {use: "falcon3:3b", degrade_to: fast}
+    fast: {use: smollm2, degrade_to: null}
+    # Judge/actor independence: deliberately NOT qwen2.5, so the grader is
+    # never the model that wrote what it grades. It does share falcon3:3b with
+    # `validator`, which four local models cannot avoid — the mild overlap,
+    # since validator is itself a checking role rather than the primary author
+    # of the rationales the judge scores. Degrades to smollm2, a peer, not to
+    # `validator` (the same model — a rung that would look like a fallback and
+    # do nothing).
+    judge: {use: "falcon3:3b", degrade_to: fast}
+
+  # Roles bind across vendors; the ladder still bottoms out on a local model.
+  # Requires OPENROUTER_API_KEY. GROQ_API_KEY and XAI_API_KEY are no longer
+  # needed by this profile — nothing here routes to Groq or xAI any more.
+  #
+  # Only `local` and `hybrid` exist, matching `ai-mode-local` / `ai-mode-hybrid`
+  # — a profile the mode switch cannot select would be unreachable through the
+  # documented interface. Unbound catalog entries (Claude, Gemini, the other
+  # OpenRouter models) stay available to any tenant that wants them.
+  hybrid:
+    architect: {use: openrouter-gpt-oss-20b, degrade_to: developer}
+    # Same WEIGHTS as the retired `llama-3.3-70b-versatile` binding, reached
+    # through OpenRouter instead of Groq. Groq decommissioned its entire Llama
+    # family on 2026-08-17 and that id now returns HTTP 404 model_not_found, so
+    # this role was unreachable for anyone selecting ai-mode-hybrid. Latent
+    # rather than loud, because default_profile is `local`.
+    #
+    # Vendor separation across the profile is unchanged and still deliberate:
+    # architect is OpenAI's weights, developer Meta's, validator Tencent's,
+    # judge Google's. No two roles share a training lineage.
+    developer: {use: openrouter-llama-70b, degrade_to: validator}
+    validator: {use: openrouter-hy3, degrade_to: fast}
+    fast: {use: smollm2, degrade_to: null}
+    # Cross-VENDOR judge: Google's Gemini grading OpenAI's gpt-oss. Sharing the
+    # PROVIDER with the architect is harmless — OpenRouter is a router, not a
+    # model — but sharing the VENDOR is not, and briefly both roles were
+    # openai/gpt-oss, differing only in size. judge_independence_warning
+    # compares model IDS, so it stayed silent through exactly the condition it
+    # exists to detect: models rate their own family's output higher, and a
+    # larger sibling is still a sibling. Scale is not independence.
+    #
+    # NO degrade_to on a judge: the eval path does not walk the chain, and
+    # where it can fire a substituted grader writes confident verdicts into
+    # the same score field. CALIBRATE fail_below per judge — 0.80 from one
+    # grader is not 0.80 from another; this is the framework default, not a
+    # measured value for gemini-2.5-pro.
+    judge: {use: openrouter-gemini-pro, fail_below: {golden: 0.80, fairness: 0.80}}

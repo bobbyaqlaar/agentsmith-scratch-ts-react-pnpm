@@ -1,0 +1,100 @@
+name: "Authenticate to GCP"
+description: >
+  Authenticates GitHub Actions to Google Cloud using Workload Identity
+  Federation (preferred — no long-lived key) or a service-account JSON key
+  (fallback). Skips gracefully when neither GCP_WORKLOAD_IDENTITY_PROVIDER
+  nor GCP_SA_KEY is configured — the same "optional infra never fails CD"
+  posture as build-push-ghcr and deploy-placeholder.
+
+  After this action runs, google.auth.default() works for any subsequent
+  step (gcloud CLI, Python google-auth library, etc.) — the action writes
+  ADC to the runner filesystem via google-github-actions/auth@v2.
+
+  Required secrets (one of):
+    GCP_WORKLOAD_IDENTITY_PROVIDER  — projects/<num>/locations/global/
+                                      workloadIdentityPools/<pool>/providers/<prov>
+    GCP_SERVICE_ACCOUNT             — <sa>@<project>.iam.gserviceaccount.com
+                                      (required when using WIF)
+    GCP_SA_KEY                      — base64-encoded service-account JSON key
+                                      (used only when WIF secrets are absent)
+
+  One-time GCP setup (WIF — recommended):
+    gcloud iam workload-identity-pools create "github-actions-pool" \
+      --project="$GCP_PROJECT_ID" --location="global"
+    gcloud iam workload-identity-pools providers create-oidc "github-provider" \
+      --project="$GCP_PROJECT_ID" --location="global" \
+      --workload-identity-pool="github-actions-pool" \
+      --issuer-uri="https://token.actions.githubusercontent.com" \
+      --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository"
+    gcloud iam service-accounts create "github-deployer" --project="$GCP_PROJECT_ID"
+    gcloud iam service-accounts add-iam-policy-binding \
+      "github-deployer@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
+      --project="$GCP_PROJECT_ID" --role="roles/iam.workloadIdentityUser" \
+      --member="principalSet://iam.googleapis.com/projects/$GCP_PROJECT_NUMBER/\
+  locations/global/workloadIdentityPools/github-actions-pool/attribute.repository/<org>/<repo>"
+    # Grant deployer SA Cloud Run deploy + Artifact Registry push rights:
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+      --member="serviceAccount:github-deployer@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
+      --role="roles/run.admin"
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+      --member="serviceAccount:github-deployer@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
+      --role="roles/artifactregistry.writer"
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+      --member="serviceAccount:github-deployer@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
+      --role="roles/iam.serviceAccountUser"
+  See OPERATIONS.md §4 (GCP deployment specifics) for full context and worker-hosting options.
+
+inputs:
+  workload_identity_provider:
+    description: "WIF provider resource name. Falls back to GCP_SA_KEY auth if empty."
+    required: false
+    default: ""
+  service_account:
+    description: "Service account email for WIF impersonation."
+    required: false
+    default: ""
+  credentials_json:
+    description: "Base64-encoded service-account JSON key (used only when WIF inputs are absent)."
+    required: false
+    default: ""
+
+outputs:
+  authenticated:
+    description: >
+      'true' if GCP auth was performed, 'false' if skipped (no secrets configured).
+      IMPORTANT: callers must compare with == 'true', e.g.:
+        if: steps.gcp-auth.outputs.authenticated == 'true'
+      Do NOT use bare if: steps.gcp-auth.outputs.authenticated — the string 'false'
+      is non-empty and therefore truthy in GitHub Actions expressions.
+    value: ${{ steps.auth-wif.outcome == 'success' || steps.auth-key.outcome == 'success' }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Authenticate via Workload Identity Federation"
+      id: auth-wif
+      if: inputs.workload_identity_provider != ''
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+
+    - name: "Authenticate via service-account JSON key (fallback)"
+      id: auth-key
+      if: inputs.workload_identity_provider == '' && inputs.credentials_json != ''
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ inputs.credentials_json }}
+
+    - name: "Report auth status"
+      shell: bash
+      run: |
+        if [ "${{ inputs.workload_identity_provider }}" != "" ]; then
+          echo "✅ GCP auth: Workload Identity Federation"
+        elif [ "${{ inputs.credentials_json }}" != "" ]; then
+          echo "✅ GCP auth: service-account JSON key (consider migrating to WIF)"
+        else
+          echo "ℹ️  GCP auth: skipped — neither GCP_WORKLOAD_IDENTITY_PROVIDER nor GCP_SA_KEY configured."
+          echo "   Set these secrets on the GitHub Environment to enable GCP deployment."
+          echo "   See OPERATIONS.md §4 (GCP deployment specifics) for setup instructions."
+        fi

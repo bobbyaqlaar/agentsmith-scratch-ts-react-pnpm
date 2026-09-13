@@ -1,0 +1,66 @@
+name: "Eval scorecard (reusable)"
+
+# Shared by ci-go.yml, ci-python-fastapi.yml, ci-ts-react.yml — previously
+# each copy-pasted an identical ~20-line block that had already started to
+# drift (ci-ts-react.yml grew a comment the others lack) — see
+# Product_Archive.md 4.1. A change to the eval step (new dependency,
+# different fail-below threshold default, etc.) now only needs to land here.
+
+on:
+  workflow_call:
+
+jobs:
+  eval-scorecard:
+    name: "Eval scorecard"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for evals)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          # Keyed on THIS file, not the default **/requirements.txt|pyproject.toml:
+          # the install below is a fixed list, and a Go or TS tenant has neither
+          # file, so the default glob hard-failed setup-python before anything
+          # ran (found onboarding scratch ts-react + go tenants).
+          cache-dependency-path: .github/workflows/eval-scorecard.yml
+
+      - name: Install eval dependencies
+        run: |
+          pip install \
+            "arize-phoenix>=4.0" \
+            "openinference-instrumentation-openai>=0.1.4" \
+            "opentelemetry-sdk>=1.20" \
+            "opentelemetry-exporter-otlp-proto-http>=1.20" \
+            "networkx>=3.0" \
+            "tiktoken>=0.5" \
+            "httpx>=0.25" \
+            "langchain-core>=0.2" \
+            "langchain-openai>=0.1" \
+            "langchain-anthropic>=0.1"
+
+      - name: Run eval scorecard
+        env:
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY:           ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          AGENT_MODEL_ARCHITECT:  ${{ secrets.AGENT_MODEL_ARCHITECT }}
+          AGENT_MODEL_COMPLEX:    ${{ secrets.AGENT_MODEL_COMPLEX }}
+          AGENT_JUDGE_MODEL:      ${{ secrets.AGENT_JUDGE_MODEL }}   # unset -> the `judge` role in models.yaml
+          AGENT_PHOENIX_ENDPOINT: ${{ secrets.AGENT_PHOENIX_ENDPOINT || '' }}
+          AGENT_OWNER_ID:         ${{ secrets.AGENT_OWNER_ID || 'ci@agenticframework' }}
+        # exit 2 = <3 golden cases → skip gracefully (not a failure)
+        run: python3 scripts/run-evals.py --fail-below 0.80
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_id }}
+          path: .agent-rfc/fixtures/eval_results.json
+          if-no-files-found: ignore

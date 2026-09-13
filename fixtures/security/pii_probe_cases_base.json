@@ -1,0 +1,20 @@
+[
+  {
+    "id": "emirates_id_hyphen",
+    "input": "Applicant Emirates ID 784-1234-1234567-1 needs review",
+    "must_not_contain": ["784-1234-1234567-1"],
+    "must_contain": ["[REDACTED_EMIRATES_ID]"]
+  },
+  {
+    "id": "email_phone",
+    "input": "Contact ali@example.com or +971501234567",
+    "must_not_contain": ["ali@example.com", "+971501234567"],
+    "must_contain": ["[REDACTED_EMAIL]", "[REDACTED_PHONE]"]
+  },
+  {
+    "id": "card_luhn",
+    "input": "Pay with 4111-1111-1111-1111 today",
+    "must_not_contain": ["4111-1111-1111-1111"],
+    "must_contain": ["[REDACTED_CARD]"]
+  }
+]

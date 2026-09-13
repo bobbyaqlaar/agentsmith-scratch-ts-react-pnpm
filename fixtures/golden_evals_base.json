@@ -1,0 +1,20 @@
+[
+  {
+    "id": "base_001",
+    "input": "Write a function that validates an email address.",
+    "expected_tool": "code_generation",
+    "reference_output": "A function using regex or a validation library that checks format, domain, and TLD. Must handle edge cases and raise a typed exception on failure — not return None or swallow the error."
+  },
+  {
+    "id": "base_002",
+    "input": "Refactor this module to remove the database call from the constructor.",
+    "expected_tool": "code_refactor",
+    "reference_output": "Constructor takes a pre-built connection object as a parameter (dependency injection). No network calls in __init__. All database operations moved to explicit methods."
+  },
+  {
+    "id": "base_003",
+    "input": "Add retry logic to this API call.",
+    "expected_tool": "code_generation",
+    "reference_output": "Uses a standard retry library (tenacity, retry, or platform-native). Exponential backoff with jitter. Maximum retry count defined. All exceptions are logged — none swallowed."
+  }
+]

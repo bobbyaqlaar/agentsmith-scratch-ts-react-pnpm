@@ -1,0 +1,14 @@
+# Org-owned risk register (SEC-RISK-001).
+# Copy to .agent-rfc/security/risk_register.yaml and fill with real risks.
+# Harness validates schema only — not content truth.
+version: 1
+entries:
+  - id: RISK-EXAMPLE-001
+    description: Example residual risk — replace with organisation-owned entry.
+    severity: medium
+    mitigations:
+      - Document accepted residual risk and owner.
+      - Link compensating SEC-* controls below.
+    control_ids:
+      - SEC-RISK-001
+      - SEC-HITL-001

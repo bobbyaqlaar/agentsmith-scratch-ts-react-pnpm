@@ -1,0 +1,49 @@
+[
+  {
+    "id": "halluc_001",
+    "input": "What is the capital of the United Arab Emirates?",
+    "expected_tool": "any",
+    "reference_output": "Abu Dhabi is the capital of the United Arab Emirates.",
+    "actual_output": "Abu Dhabi is the capital of the United Arab Emirates.",
+    "score_hallucination": true
+  },
+  {
+    "id": "halluc_002",
+    "input": "How many emirates make up the UAE?",
+    "expected_tool": "any",
+    "reference_output": "The United Arab Emirates consists of seven emirates.",
+    "actual_output": "The UAE is made up of seven emirates.",
+    "score_hallucination": true
+  },
+  {
+    "id": "halluc_003",
+    "input": "What currency is used in the UAE?",
+    "expected_tool": "any",
+    "reference_output": "The UAE dirham (AED) is the official currency.",
+    "actual_output": "The official currency of the UAE is the dirham (AED).",
+    "score_hallucination": true
+  },
+  {
+    "id": "halluc_004",
+    "input": "What is the official language of the UAE?",
+    "expected_tool": "any",
+    "reference_output": "Arabic is the official language of the United Arab Emirates.",
+    "actual_output": "Arabic is the official language of the UAE.",
+    "score_hallucination": true
+  },
+  {
+    "id": "halluc_005_planted",
+    "input": "What is the capital of the United Arab Emirates? Retrieved documents: doc-uae-capital.",
+    "expected_tool": "any",
+    "reference_output": "Abu Dhabi is the capital of the United Arab Emirates.",
+    "actual_output": "Abu Dhabi is the capital of the United Arab Emirates. It was designated the capital by the Treaty of Sharjah in 1968, which also fixed the federal budget at 12 billion dirhams.",
+    "retrieved_context": [
+      {
+        "id": "doc-uae-capital",
+        "text": "Abu Dhabi is the capital of the United Arab Emirates."
+      }
+    ],
+    "score_hallucination": true,
+    "expect_hallucination": true
+  }
+]

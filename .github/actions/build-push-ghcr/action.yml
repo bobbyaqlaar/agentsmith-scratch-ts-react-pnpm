@@ -1,0 +1,102 @@
+name: "Build & push to GHCR"
+description: >
+  Builds a multi-stage Docker image and pushes it to GitHub Container
+  Registry (ghcr.io) using the workflow's own GITHUB_TOKEN — no extra
+  registry secret needed, works the same on every fork/tenant repo.
+  Skips gracefully (no image built, no CD failure) when no Dockerfile is
+  present at the given path, matching the framework's established
+  "optional infra never fails CD" posture (same as the Ops Portal history
+  sync step). Containerizing the agent app is genuinely optional: a
+  tenant deploying via a buildpack-based platform (e.g. plain `git push
+  heroku`) has no use for an image at all.
+
+inputs:
+  dockerfile_path:
+    description: "Path to the Dockerfile to build. Skipped (exit 0) if this file doesn't exist."
+    required: false
+    default: "Dockerfile"
+  context:
+    description: "Docker build context."
+    required: false
+    default: "."
+  image_name:
+    description: "Image name under ghcr.io/<owner>/. Defaults to the repository name."
+    required: false
+    default: ""
+  tag:
+    description: "Image tag. Defaults to the short commit SHA."
+    required: false
+    default: ""
+
+outputs:
+  image_ref:
+    description: "Full pushed image reference (e.g. ghcr.io/acme/app:abc1234), or empty if the build was skipped."
+    value: ${{ steps.resolve.outputs.image_ref }}
+  built:
+    description: "\"true\" if an image was actually built and pushed, \"false\" if skipped."
+    value: ${{ steps.resolve.outputs.built }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Check for Dockerfile"
+      id: check
+      shell: bash
+      run: |
+        if [ -f "${{ inputs.dockerfile_path }}" ]; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          echo "ℹ️  No Dockerfile at '${{ inputs.dockerfile_path }}' — skipping containerized build."
+          echo "   This is fine for platforms that build from source directly (buildpacks, etc.)."
+          echo "   Add a Dockerfile to enable GHCR image builds + on-prem/K8s deployment (see"
+          echo "   templates/onprem-deploy/README.md)."
+        fi
+
+    - name: "Log in to GHCR"
+      if: steps.check.outputs.present == 'true'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+
+    - name: "Set up Docker Buildx"
+      if: steps.check.outputs.present == 'true'
+      uses: docker/setup-buildx-action@v3
+
+    - name: "Resolve image ref"
+      id: resolve
+      shell: bash
+      run: |
+        if [ "${{ steps.check.outputs.present }}" != "true" ]; then
+          echo "built=false" >> "$GITHUB_OUTPUT"
+          echo "image_ref=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        name="${{ inputs.image_name }}"
+        if [ -z "$name" ]; then name="$(basename "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"; fi
+        tag="${{ inputs.tag }}"
+        if [ -z "$tag" ]; then tag="$(git rev-parse --short HEAD)"; fi
+        owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+        ref="ghcr.io/${owner}/${name}:${tag}"
+        echo "image_ref=${ref}" >> "$GITHUB_OUTPUT"
+        echo "built=true" >> "$GITHUB_OUTPUT"
+
+    - name: "Build and push"
+      if: steps.check.outputs.present == 'true'
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile_path }}
+        push: true
+        tags: ${{ steps.resolve.outputs.image_ref }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: "Report"
+      shell: bash
+      run: |
+        if [ "${{ steps.resolve.outputs.built }}" = "true" ]; then
+          echo "📦 Pushed ${{ steps.resolve.outputs.image_ref }}"
+        fi

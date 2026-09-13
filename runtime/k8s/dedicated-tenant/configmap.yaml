@@ -1,0 +1,26 @@
+# Non-secret config for this tenant's dedicated worker pool.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agenticframework-config
+  namespace: tenant-{{TENANT_ID}}
+data:
+  TENANT_ID: "{{TENANT_ID}}"
+  ENVIRONMENT: "production"
+  # Accepted values: "temporal" | "celery" — anything else fails fast at
+  # worker.py startup (see runtime/worker.py main(), "Unknown WORKER_BACKEND").
+  # No static link from this file to that Python code, so a typo here
+  # (e.g. "temporral") still passes `kubectl apply` and only surfaces once the
+  # pod starts — kept in sync by hand; see FIXES_AND_CLEANUP.md 4.5.
+  WORKER_BACKEND: "temporal"
+  # Per-tenant Phoenix project — dedicated tenants get no cross-tenant query
+  # access (§30). Point this at a Phoenix instance/project scoped to this
+  # tenant only, never the shared team Phoenix.
+  AGENT_PHOENIX_ENDPOINT: "https://phoenix-{{TENANT_ID}}.internal"
+  # Budget store backend for runtime/llm_gateway.py — "Budget is enforced at
+  # the infrastructure level (separate LLM Gateway instance)" means this
+  # tenant's worker talks to ITS OWN Postgres/Redis (see secret.yaml.example
+  # for DATABASE_URL), not the shared fleet's budget store.
+  # Accepted values: "memory" | "redis" | "postgres" — _make_budget_backend()
+  # in runtime/llm_gateway.py raises ValueError on anything else at startup.
+  BUDGET_BACKEND: "postgres"

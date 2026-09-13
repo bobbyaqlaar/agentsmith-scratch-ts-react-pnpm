@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.local/schemas/risk_register.schema.json",
+  "title": "AgentSmith risk register",
+  "type": "object",
+  "required": ["entries"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "severity", "mitigations", "control_ids"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"]
+          },
+          "mitigations": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "control_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^SEC-[A-Z]+-[0-9]{3}$"
+            }
+          }
+        }
+      }
+    }
+  }
+}

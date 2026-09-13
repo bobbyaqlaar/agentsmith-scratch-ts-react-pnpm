@@ -1,0 +1,33 @@
+# runtime/requirements-runtime.txt — production worker dependencies only.
+#
+# Subset of the repo root's requirements.txt needed to actually RUN a
+# worker (runtime/llm_gateway.py + a tenant's worker.py/activities.py) in a
+# container — deliberately excludes dev/CI-only packages (pytest, langgraph,
+# arize-phoenix's own SDK install, etc.) that don't belong in a production
+# image. Keep in sync by hand when runtime/llm_gateway.py or
+# runtime/provider_dispatch.py gains a new import.
+
+httpx>=0.25,<1.0
+tenacity>=8.2,<10.0
+pyyaml>=6.0,<7.0
+# Structured LLM output validation (runtime/structured_output.py, SEC-OUTPUT-001)
+pydantic>=2.0,<3.0
+psycopg2-binary>=2.9,<3.0
+redis>=5.0,<6.0
+cryptography>=42.0,<44.0
+temporalio>=1.5,<2.0
+
+# Cloud-native LLM providers (runtime/provider_dispatch.py)
+google-auth>=2.30,<3.0
+boto3>=1.34,<2.0
+
+# Container health endpoint (examples/oil-price-agent/worker.py)
+aiohttp>=3.9,<4.0
+
+# Optional — exact token counts for runtime/conversation_memory.py. Without it
+# the buffer estimates, and the estimate reads Arabic ~65% low: a budget sized
+# to a context window then holds about three times what it believes. The
+# estimate errs high now and logs once that it is estimating, so this is a
+# correctness upgrade rather than a requirement. Matches the `tokenizer` extra
+# in pyproject.toml.
+tiktoken>=0.5,<1.0

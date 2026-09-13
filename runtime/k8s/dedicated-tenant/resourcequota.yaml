@@ -1,0 +1,16 @@
+# Bounds this dedicated tenant's footprint if the cluster is shared across
+# multiple dedicated-tier tenants' namespaces (defense in depth — dedicated
+# isolation is mainly about no cross-tenant data/budget sharing, not
+# necessarily a wholly separate physical cluster per tenant).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: agenticframework-quota
+  namespace: tenant-{{TENANT_ID}}
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    pods: "20"

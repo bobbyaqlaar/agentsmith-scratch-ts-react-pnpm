@@ -1,0 +1,75 @@
+name: "Rollback notify"
+description: >
+  On a post-deploy failure (smoke test, redaction check, etc.): posts
+  failure context to Slack/Teams (if a webhook secret is configured), runs
+  a tenant-supplied ROLLBACK_COMMAND (if set), then re-fails the job so the
+  workflow's overall status stays red. Actual platform rollback execution
+  stays tenant-supplied — this action prints the relevant platform command
+  if none is configured, matching the existing "print the command, don't
+  guess which CLI to run" posture already in cd-production.yml
+  (Product_Archive.md P4).
+
+inputs:
+  slack_webhook_url:
+    description: "Slack incoming webhook URL. Empty = skip Slack notify."
+    required: false
+    default: ""
+  teams_webhook_url:
+    description: "Microsoft Teams incoming webhook URL. Empty = skip Teams notify."
+    required: false
+    default: ""
+  rollback_command:
+    description: >
+      Shell command that performs the actual platform rollback (e.g.
+      "railway rollback", "fly deploy --image $PREV_IMAGE"). Empty = no
+      rollback executed, only notified.
+    required: false
+    default: ""
+  environment_label:
+    description: Human-readable label for log/notification text (e.g. "staging", "production").
+    required: false
+    default: "target"
+  failure_context:
+    description: Short description of what failed (e.g. "post-deploy eval smoke test").
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Notify Slack"
+      if: inputs.slack_webhook_url != ''
+      shell: bash
+      run: |
+        curl -s -X POST "${{ inputs.slack_webhook_url }}" \
+          -H "Content-Type: application/json" \
+          -d "{\"text\": \"🛑 ${{ inputs.environment_label }} deploy failed: ${{ inputs.failure_context }} — ${{ github.repository }}@${{ github.sha }} (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"}" \
+          || echo "⚠️  Slack notify failed (non-fatal)"
+
+    - name: "Notify Teams"
+      if: inputs.teams_webhook_url != ''
+      shell: bash
+      run: |
+        curl -s -X POST "${{ inputs.teams_webhook_url }}" \
+          -H "Content-Type: application/json" \
+          -d "{\"text\": \"🛑 ${{ inputs.environment_label }} deploy failed: ${{ inputs.failure_context }} — ${{ github.repository }}@${{ github.sha }} (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"}" \
+          || echo "⚠️  Teams notify failed (non-fatal)"
+
+    - name: "Run rollback"
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.rollback_command }}" ]; then
+          echo "🛑 ${{ inputs.failure_context }} — no ROLLBACK_COMMAND configured for ${{ inputs.environment_label }}."
+          echo "   Configure your platform's rollback, e.g.:"
+          echo "     Fly.io:   fly releases list && fly deploy --image <prev-image>"
+          echo "     Railway:  railway rollback"
+          echo "     AWS ECS:  aws ecs update-service --task-definition <prev-arn>"
+        else
+          echo "⏪ Running rollback for ${{ inputs.environment_label }}..."
+          eval "${{ inputs.rollback_command }}"
+        fi
+
+    - name: "Fail the job"
+      shell: bash
+      run: |
+        echo "❌ ${{ inputs.failure_context }} — failing workflow (red status preserved after rollback)."
+        exit 1

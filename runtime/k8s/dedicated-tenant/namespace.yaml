@@ -1,0 +1,9 @@
+# Dedicated worker pool (SPECS.md §23, §30): tenant.isolation: dedicated
+# gets its own Kubernetes namespace, separate from the shared worker fleet.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-{{TENANT_ID}}
+  labels:
+    agenticframework.io/tenant-id: "{{TENANT_ID}}"
+    agenticframework.io/isolation: dedicated

@@ -1,0 +1,40 @@
+name: "Deploy placeholder"
+description: >
+  Documented no-op deploy step for greenfield tenants. Replaces the inline
+  echo block that used to live directly in cd-staging.yml/cd-production.yml
+  (Product_Archive.md P4) — a swappable named step a tenant points at
+  their real platform via the deploy_command input, rather than literal
+  text to find-and-delete inside the workflow YAML.
+
+inputs:
+  deploy_command:
+    description: >
+      Shell command to run for the actual deploy (e.g. "flyctl deploy",
+      "railway up --environment staging"). Empty = no-op, prints guidance
+      and exits 0 — matches today's "replace this step" placeholder
+      behavior so an unconfigured tenant repo doesn't fail CD.
+    required: false
+    default: ""
+  environment_label:
+    description: Human-readable label for log output (e.g. "staging", "production").
+    required: false
+    default: "target"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Deploy"
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.deploy_command }}" ]; then
+          echo "🚀 No deploy_command configured for ${{ inputs.environment_label }} — no-op."
+          echo "   Set the DEPLOY_COMMAND secret (or pass deploy_command directly) to wire"
+          echo "   in your platform, e.g.:"
+          echo "     Fly.io:   flyctl deploy --app <app>-${{ inputs.environment_label }}"
+          echo "     Railway:  railway up --environment ${{ inputs.environment_label }}"
+          echo "     AWS ECS:  aws ecs update-service --cluster ${{ inputs.environment_label }} ..."
+          echo "     GCP Run:  gcloud run deploy <service>-${{ inputs.environment_label }} ..."
+        else
+          echo "🚀 Deploying to ${{ inputs.environment_label }}..."
+          eval "${{ inputs.deploy_command }}"
+        fi

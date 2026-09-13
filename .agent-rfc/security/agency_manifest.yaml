@@ -1,0 +1,7 @@
+# High-impact actions requiring HITL (SEC-AGENCY-001).
+# Copy to .agent-rfc/security/agency_manifest.yaml
+version: 1
+actions:
+  - workflow: example_workflow
+    action: high_impact_step
+    needs_hitl: true

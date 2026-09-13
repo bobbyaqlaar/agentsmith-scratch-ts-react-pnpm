@@ -1,0 +1,530 @@
+[
+  {
+    "id": "SEC-PII-001",
+    "title": "PII pre-call scrub",
+    "status": "partial",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM06"
+      ],
+      "nist": [
+        "MAP 2.6",
+        "MANAGE 2.4"
+      ],
+      "atlas": [
+        "AML.T0043"
+      ],
+      "iso42001": [
+        9
+      ]
+    },
+    "runner": "pii_precall",
+    "check_type": "unit",
+    "mechanism": "runtime/input_guardrail.py pre-call scrub"
+  },
+  {
+    "id": "SEC-PII-002",
+    "title": "Trace redaction",
+    "status": "met",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [
+        "LLM06"
+      ],
+      "nist": [
+        "MANAGE 2.4"
+      ],
+      "atlas": [
+        "AML.T0043"
+      ],
+      "iso42001": [
+        9
+      ]
+    },
+    "runner": "pii_postcall",
+    "check_type": "unit",
+    "mechanism": "runtime/trace_redactor.py + CD --check-redaction"
+  },
+  {
+    "id": "SEC-HITL-001",
+    "title": "HITL gate",
+    "status": "met",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [
+        "LLM08"
+      ],
+      "nist": [
+        "GOVERN 1.5",
+        "MANAGE 4.1"
+      ],
+      "atlas": [
+        "AML.T0048"
+      ],
+      "iso42001": [
+        5
+      ]
+    },
+    "runner": "hitl_gate",
+    "check_type": "integration",
+    "mechanism": "run_with_hitl_gate, recoverable DLQ"
+  },
+  {
+    "id": "SEC-AUDIT-001",
+    "title": "HMAC audit log",
+    "status": "met",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [],
+      "nist": [
+        "GOVERN 1.2"
+      ],
+      "atlas": [
+        "AML.T0025"
+      ],
+      "iso42001": [
+        6
+      ]
+    },
+    "runner": "audit_hmac",
+    "check_type": "unit",
+    "mechanism": "HMAC audit-log tamper-evidence \u2014 portal/test/auditSignature.test.ts against portal/lib/auditSignature.ts: a mutated event stops verifying (actor, tenant, event type, timestamp, details), details key order does not affect the signature (Postgres JSONB reorders keys), a truncated or non-hex signature is rejected rather than throwing, and a missing AUDIT_LOG_HMAC_KEY refuses rather than signing with a default. Runs without a database. Append-only enforcement is SEC-AUDIT-002."
+  },
+  {
+    "id": "SEC-AUDIT-002",
+    "title": "Append-only audit log",
+    "status": "gap",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [],
+      "nist": [
+        "GOVERN 1.2"
+      ],
+      "atlas": [
+        "AML.T0025"
+      ],
+      "iso42001": [
+        6
+      ]
+    },
+    "runner": "audit_append_only",
+    "check_type": "live",
+    "mechanism": "UPDATE and DELETE on audit_log are refused by database triggers (portal/db/schema.sql: audit_log_no_update / audit_log_no_delete), asserted by portal/test/auditLog.test.ts. VERIFIED IN CI on every push \u2014 self-test.yml's \"Ops Portal (Next.js)\" job provisions a postgres:16-alpine service, runs db:migrate, then `npm run test:db`, which includes the two cases that assert UPDATE and DELETE are rejected with /append-only/. It is a gap for THIS harness only, which runs offline and cannot reach a database; binding the control to a suite that exits at import time without DATABASE_URL would make it fail whenever Postgres is down. This text previously read \"UNVERIFIED in CI ... verify at deploy time\", which was written before the portal job gained its Postgres service and understated a control that had since become CI-covered. Deliberately a separate control from SEC-AUDIT-001 rather than folded into it: signature tamper-evidence is provable offline and append-only is not, and one green tick covering both would report the log as verified while the half that actually stops a deletion went unchecked."
+  },
+  {
+    "id": "SEC-RBAC-001",
+    "title": "Portal RBAC",
+    "status": "partial",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [],
+      "nist": [
+        "GOVERN 1.3"
+      ],
+      "atlas": [
+        "AML.T0048"
+      ],
+      "iso42001": [
+        1
+      ]
+    },
+    "runner": "rbac_matrix",
+    "check_type": "unit",
+    "mechanism": "Portal OIDC plus authz.ts: middleware resolves an identity into a role and a tenant scope and forwards both as headers it strips from the incoming request first. Every handler that reads that Access must gate on BOTH \u2014 the role for the verb, the scope for the tenant \u2014 and portal/test/authz.test.ts sweeps the API tree per handler to check it, after POST /api/tenants was found gating on the role alone. A second sweep refuses `===` on a credential in the auth path. Status stays PARTIAL deliberately: the sweeps read source and the matrix tests exercise pure functions; neither drives a real request through middleware."
+  },
+  {
+    "id": "SEC-EVAL-001",
+    "title": "Golden eval suite",
+    "status": "met",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM09"
+      ],
+      "nist": [
+        "MEASURE 2.6"
+      ],
+      "atlas": [],
+      "iso42001": [
+        7
+      ]
+    },
+    "runner": "eval_golden",
+    "check_type": "eval",
+    "mechanism": "run-evals.py golden suite"
+  },
+  {
+    "id": "SEC-EVAL-002",
+    "title": "Fairness eval suite",
+    "status": "partial",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM09"
+      ],
+      "nist": [
+        "MEASURE 2.11"
+      ],
+      "atlas": [],
+      "iso42001": [
+        8
+      ]
+    },
+    "runner": "eval_fairness",
+    "check_type": "eval",
+    "mechanism": "Fairness suite + pair parity"
+  },
+  {
+    "id": "SEC-EVAL-003",
+    "title": "Hallucination rate gate",
+    "status": "met",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM09"
+      ],
+      "nist": [
+        "MEASURE 2.6"
+      ],
+      "atlas": [
+        "AML.T0024"
+      ],
+      "iso42001": [
+        7
+      ]
+    },
+    "runner": "eval_hallucination",
+    "check_type": "eval",
+    "mechanism": "Hallucination rate gate"
+  },
+  {
+    "id": "SEC-BUDGET-001",
+    "title": "LLM budget caps",
+    "status": "met",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [
+        "LLM04"
+      ],
+      "nist": [
+        "MANAGE 2.4"
+      ],
+      "atlas": [
+        "AML.T0034"
+      ],
+      "iso42001": [
+        11
+      ]
+    },
+    "runner": "budget_caps",
+    "check_type": "unit",
+    "mechanism": "Budget caps, degrade ladder, circuit breaker"
+  },
+  {
+    "id": "SEC-CHANGE-001",
+    "title": "Change management gates",
+    "status": "met",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [],
+      "nist": [
+        "GOVERN 1.6"
+      ],
+      "atlas": [],
+      "iso42001": [
+        10
+      ]
+    },
+    "runner": "change_gates",
+    "check_type": "static",
+    "mechanism": "Eval gates, hooks, RFC enforcement"
+  },
+  {
+    "id": "SEC-DLQ-001",
+    "title": "Recoverable DLQ",
+    "status": "met",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [
+        "LLM02"
+      ],
+      "nist": [
+        "MANAGE 4.4"
+      ],
+      "atlas": [],
+      "iso42001": [
+        11
+      ]
+    },
+    "runner": "dlq_check",
+    "check_type": "unit",
+    "mechanism": "Recoverable step + DLQ \u2014 the dead-letter envelope contract, asserted by runtime/test/test_dead_letter.py: both producers (run_with_hitl_gate, run_with_recoverable_step) build the envelope through dead_letter_envelope() rather than hand-rolling it, its keys are exactly what DeadLetterQueue.enqueue accepts, and dlq_enqueue_activity rejects the legacy flattened shape by name. Runs without Postgres. Whether a row actually lands in the table is integration scope and is NOT claimed here."
+  },
+  {
+    "id": "SEC-SELF-001",
+    "title": "Self-correction path",
+    "status": "partial",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM02"
+      ],
+      "nist": [
+        "MANAGE 4.4"
+      ],
+      "atlas": [],
+      "iso42001": [
+        11
+      ]
+    },
+    "runner": "self_correction",
+    "check_type": "unit",
+    "mechanism": "Opt-in run_with_self_correction"
+  },
+  {
+    "id": "SEC-GW-001",
+    "title": "LLM gateway choke point",
+    "status": "partial",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM07"
+      ],
+      "nist": [
+        "MAP 2.3"
+      ],
+      "atlas": [
+        "AML.T0040"
+      ],
+      "iso42001": [
+        4
+      ]
+    },
+    "runner": "gateway_static",
+    "check_type": "static",
+    "mechanism": "llm_gateway.py choke point"
+  },
+  {
+    "id": "SEC-PROMPT-001",
+    "title": "Prompt injection guard",
+    "status": "met",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [
+        "LLM01"
+      ],
+      "nist": [
+        "MAP 2.6"
+      ],
+      "atlas": [
+        "AML.T0051"
+      ],
+      "iso42001": [
+        9
+      ]
+    },
+    "runner": "prompt_guard",
+    "check_type": "unit",
+    "mechanism": "runtime/prompt_guard.py heuristics + tenant denylist"
+  },
+  {
+    "id": "SEC-OUTPUT-001",
+    "title": "Structured output validation",
+    "status": "met",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM02"
+      ],
+      "nist": [
+        "MEASURE 2.7"
+      ],
+      "atlas": [],
+      "iso42001": [
+        7
+      ]
+    },
+    "runner": "structured_output",
+    "check_type": "unit",
+    "mechanism": "runtime/structured_output.py parse_llm_json + Pydantic"
+  },
+  {
+    "id": "SEC-TOOL-001",
+    "title": "Tool allowlist",
+    "status": "met",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM07"
+      ],
+      "nist": [
+        "GOVERN 1.3"
+      ],
+      "atlas": [
+        "AML.T0040"
+      ],
+      "iso42001": [
+        4
+      ]
+    },
+    "runner": "tool_allowlist",
+    "check_type": "unit",
+    "mechanism": "runtime/tool_registry.py + tool_allowlist.yaml"
+  },
+  {
+    "id": "SEC-MOD-001",
+    "title": "Output moderation hook",
+    "status": "met",
+    "owner": "tenant",
+    "frameworks": {
+      "owasp": [
+        "LLM01"
+      ],
+      "nist": [
+        "MAP 2.6"
+      ],
+      "atlas": [
+        "AML.T0051"
+      ],
+      "iso42001": [
+        9
+      ]
+    },
+    "runner": "moderation_hook",
+    "check_type": "unit",
+    "mechanism": "runtime/moderation.py register_output_moderator + MODERATION_HOOK"
+  },
+  {
+    "id": "SEC-RISK-001",
+    "title": "Risk register artifact",
+    "status": "org-owned",
+    "owner": "tenant",
+    "frameworks": {
+      "owasp": [],
+      "nist": [
+        "MAP 1.5"
+      ],
+      "atlas": [
+        "AML.T0000"
+      ],
+      "iso42001": [
+        2
+      ]
+    },
+    "runner": "risk_register",
+    "check_type": "artifact",
+    "mechanism": "Planned: risk register template generator"
+  },
+  {
+    "id": "SEC-ADV-001",
+    "title": "Adversarial eval suite",
+    "status": "met",
+    "owner": "shared",
+    "frameworks": {
+      "owasp": [
+        "LLM01"
+      ],
+      "nist": [
+        "MEASURE 2.7"
+      ],
+      "atlas": [
+        "AML.T0024"
+      ],
+      "iso42001": [
+        7
+      ]
+    },
+    "runner": "adversarial_eval",
+    "check_type": "eval",
+    "mechanism": "run-evals.py --suite adversarial + prompt_guard scorer"
+  },
+  {
+    "id": "SEC-SSO-001",
+    "title": "SSO session revocation",
+    "status": "met",
+    "owner": "framework",
+    "frameworks": {
+      "owasp": [],
+      "nist": [
+        "GOVERN 1.3"
+      ],
+      "atlas": [
+        "AML.T0048"
+      ],
+      "iso42001": [
+        1
+      ]
+    },
+    "runner": "sso_revocation",
+    "check_type": "unit",
+    "mechanism": "Session JWTs carry a `jti`; POST /api/auth/logout records it in `revoked_sessions` and middleware.ts checks it through GET /api/auth/session-status before trusting an otherwise-valid cookie. `SSO_REVOCATION_MODE` decides what happens when that check cannot be made: fail-open (default, legacy) allows, fail-closed returns 503. The route answers 503 \u2014 not a 2xx \u2014 when the revocation store is unreachable, because 'I could not check' and 'not revoked' are different answers; `interpretStatusResponse` refuses to read any body without a boolean verdict as the second. Asserted by portal/test/ssoRevocation.test.ts over the route's response, not only over a stubbed transport. What this does NOT claim: that a revoked session is rejected within any bound under fail-open \u2014 the 8h token TTL is the only limit there."
+  },
+  {
+    "id": "SEC-SOV-001",
+    "title": "Sovereign residency",
+    "status": "met",
+    "owner": "tenant",
+    "frameworks": {
+      "owasp": [
+        "LLM05"
+      ],
+      "nist": [
+        "MAP 2.3"
+      ],
+      "atlas": [],
+      "iso42001": [
+        4
+      ]
+    },
+    "runner": "sovereign_residency",
+    "check_type": "unit",
+    "mechanism": "Data residency as a DECLARATION, not a reachability probe \u2014 scripts/security/runners/sovereign_residency.py resolves templates/uae-sovereign/models.yaml through llm_gateway._roles_from_doc (either registry shape) and walks every role's degrade ladder with llm_gateway.degrade_chain, the same function the gateway uses at runtime. Fails a role routed to a hosted multi-tenant API, a self-hostable provider with no declared endpoint (which resolves to the vendor default), or a degrade target that is not a declared role. Catches the leak a live probe cannot: the primary endpoint is in-border, the FALLBACK is where residency escapes. Needs no credentials."
+  },
+  {
+    "id": "SEC-RAG-001",
+    "title": "RAG poison-doc defense",
+    "status": "met",
+    "owner": "tenant",
+    "frameworks": {
+      "owasp": [
+        "LLM03"
+      ],
+      "nist": [
+        "MAP 2.6"
+      ],
+      "atlas": [
+        "AML.T0010"
+      ],
+      "iso42001": [
+        3
+      ]
+    },
+    "runner": "rag_poison",
+    "check_type": "eval",
+    "mechanism": "RAG poisoning defence \u2014 runtime.prompt_guard.scan_documents quarantines poisoned retrieved context per-document (rejecting the whole retrieval on one bad chunk would hand an attacker a denial of service). Gated by `run-evals.py --suite rag_poison` over fixtures/rag_poison_base.json, which pairs every poisoned document with a benign twin on the same subject so a guard that quarantines everything cannot score perfectly. Miss ceiling RAG_POISON_FAIL_ABOVE (default 0.10). Deterministic and local \u2014 no judge, no credentials. CLAIMS detection of poisoned context before prompt assembly; does NOT claim a model would resist the instruction if the document reached it."
+  },
+  {
+    "id": "SEC-AGENCY-001",
+    "title": "Agency / HITL manifest",
+    "status": "partial",
+    "owner": "tenant",
+    "frameworks": {
+      "owasp": [
+        "LLM08"
+      ],
+      "nist": [
+        "GOVERN 1.5"
+      ],
+      "atlas": [
+        "AML.T0048"
+      ],
+      "iso42001": [
+        5
+      ]
+    },
+    "runner": "agency_manifest",
+    "check_type": "artifact",
+    "mechanism": "HITL + workflow needs_hitl flags"
+  }
+]

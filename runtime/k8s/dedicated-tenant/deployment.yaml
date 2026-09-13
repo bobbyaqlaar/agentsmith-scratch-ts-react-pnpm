@@ -1,0 +1,40 @@
+# Dedicated worker deployment for this tenant. The container image is a
+# TENANT REPO concern, not a framework one — tenant repos define their own
+# production workflow files and build their own image around runtime/worker.py
+# + their domain workflows/activities (§25: "Framework workflows are never
+# deployed directly as tenant production code"). {{WORKER_IMAGE}} is a
+# placeholder for that tenant-built image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agenticframework-worker
+  namespace: tenant-{{TENANT_ID}}
+  labels:
+    agenticframework.io/tenant-id: "{{TENANT_ID}}"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agenticframework-worker
+      agenticframework.io/tenant-id: "{{TENANT_ID}}"
+  template:
+    metadata:
+      labels:
+        app: agenticframework-worker
+        agenticframework.io/tenant-id: "{{TENANT_ID}}"
+    spec:
+      containers:
+        - name: worker
+          image: "{{WORKER_IMAGE}}"
+          envFrom:
+            - configMapRef:
+                name: agenticframework-config
+            - secretRef:
+                name: agenticframework-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"

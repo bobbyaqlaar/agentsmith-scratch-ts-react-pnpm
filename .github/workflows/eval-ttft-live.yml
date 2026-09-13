@@ -1,0 +1,33 @@
+name: "TTFT live (Ollama, opt-in)"
+
+# Optional live TTFT gate — hard-fails when TTFT_LIVE=required and ttft_ms
+# exceeds TTFT_FAIL_ABOVE_MS. Skipped entirely when vars.TTFT_LIVE != required.
+# OLLAMA_BASE_URL: set repo secret when Ollama is not on localhost; script
+# defaults to http://127.0.0.1:11434 when unset.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  ttft-live:
+    if: ${{ vars.TTFT_LIVE == 'required' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install httpx
+
+      - name: Run TTFT live
+        env:
+          OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
+          TTFT_FAIL_ABOVE_MS: ${{ vars.TTFT_FAIL_ABOVE_MS || '2000' }}
+        run: python3 scripts/verify_ttft.py

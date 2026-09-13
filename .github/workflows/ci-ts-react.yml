@@ -1,0 +1,179 @@
+name: "CI: TypeScript/React Guardrails"
+
+on:
+  pull_request:
+    branches: ["main", "develop"]
+  push:
+    # develop too: cd-staging.yml deploys only after THIS workflow succeeds on
+    # a push to develop, so without it staging never deploys.
+    branches: ["main", "develop"]
+
+concurrency:
+  group: ci-ts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guardrails:
+    name: "Guardrails — TypeScript/React"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The lockfile decides the package manager. This template assumed npm
+      # (`cache: npm` + `npm ci`), so a pnpm project failed setup-node before
+      # any check ran. A project without a lockfile fails here, by name: CI
+      # installs exactly what the lockfile pins, or nothing.
+      - name: Detect package manager
+        id: pm
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pm=pnpm
+          elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            pm=npm
+          elif [ -f yarn.lock ] || [ -f bun.lock ] || [ -f bun.lockb ]; then
+            echo "::error::yarn and bun lockfiles are not supported by this template yet — use npm or pnpm, or adapt the install steps"
+            exit 1
+          else
+            echo "::error::no lockfile — commit package-lock.json (npm) or pnpm-lock.yaml (pnpm)"
+            exit 1
+          fi
+          # pnpm/action-setup reads the version from package.json's
+          # `packageManager` and refuses a second one given here, so pass a
+          # version only when the project does not pin one.
+          version=""
+          if [ "$pm" = pnpm ] && ! node -e 'process.exit(require("./package.json").packageManager ? 0 : 1)'; then
+            version=10
+          fi
+          echo "pm=$pm" >> "$GITHUB_OUTPUT"
+          echo "pnpm_version=$version" >> "$GITHUB_OUTPUT"
+          echo "PM=$pm" >> "$GITHUB_ENV"
+
+      # Before setup-node: its pnpm cache needs pnpm on PATH.
+      - name: Setup pnpm
+        if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ steps.pm.outputs.pnpm_version }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: ${{ steps.pm.outputs.pm }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install pyyaml networkx
+
+      - name: Install dependencies
+        run: |
+          if [ "$PM" = pnpm ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm ci
+          fi
+
+      # A project's own `typecheck` script wins; otherwise `tsc -b --noEmit`,
+      # which follows project references. `npm run tsc` assumed a script no
+      # standard scaffold defines — a stock `create-vite` react-ts project
+      # failed here with `Missing script: "tsc"` before any real check ran.
+      - name: Type check
+        run: |
+          if node -e 'process.exit(require("./package.json").scripts?.typecheck ? 0 : 1)'; then
+            "$PM" run typecheck
+          elif [ "$PM" = pnpm ]; then
+            pnpm exec tsc -b --noEmit
+          else
+            npx --no-install tsc -b --noEmit
+          fi
+
+      # --if-present BEFORE the script name: pnpm passes anything after it to
+      # the script itself. npm accepts it in either place.
+      - name: Lint
+        run: '"$PM" run --if-present lint'
+
+      - name: "Validate Knowledge Graph (Pillar 2)"
+        run: |
+          python3 scripts/map_codebase.py --quiet
+          python3 - <<'EOF'
+          import json, sys
+          from pathlib import Path
+
+          committed = Path(".agent-rfc/fixtures/knowledge_graph.json")
+          if not committed.exists():
+              print("⚠️  No committed knowledge_graph.json — skipping staleness check.")
+              sys.exit(0)
+
+          with committed.open() as f:
+              data = json.load(f)
+
+          node_count = len(data.get("nodes", []))
+          edge_count = len(data.get("edges", data.get("links", [])))
+          print(f"✅ Knowledge Graph: {node_count} nodes, {edge_count} edges")
+
+          if node_count == 0:
+              print("⚠️  Knowledge Graph is empty — map_codebase.py may have failed.")
+              sys.exit(1)
+          EOF
+        continue-on-error: true # warn, not block, until adoption is stable
+
+      - name: "RFC gate (Pillar 1)"
+        run: |
+          if [ ! -f ".agenticframework/org-policy.yaml" ]; then
+            echo "ℹ️  Developer mode — RFC gate skipped."
+            exit 0
+          fi
+          RFC_COUNT=$(find .agent-rfc -maxdepth 1 -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+          if [ "${RFC_COUNT:-0}" -eq 0 ]; then
+            echo "❌ Enterprise policy: at least one RFC required under .agent-rfc/ before merging."
+            exit 1
+          fi
+          echo "✅ RFC gate: ${RFC_COUNT} RFC(s) found."
+
+      - name: "IDE config drift check (Pillar 6/7)"
+        run: python3 scripts/generate-ide-config.py --check-only
+        continue-on-error: true # warn only — blocking is a Phase 5 decision
+
+      - name: "Framework health check (Pillar 3/5)"
+        env:
+          AGENT_PHOENIX_ENDPOINT: ${{ secrets.AGENT_PHOENIX_ENDPOINT || '' }}
+          AGENT_OWNER_ID: ${{ secrets.AGENT_OWNER_ID || 'ci@agenticframework' }}
+        run: python3 scripts/verify_system.py || true # non-blocking — inform, not gate
+
+      # Runner-agnostic: CI=true is what puts Jest into single-run mode, and
+      # Vitest detects it the same way. `-- --watchAll=false --ci --coverage`
+      # were Jest-only flags — Vitest, the default runner for a Vite project,
+      # exits with `Unknown option --watchAll`.
+      - name: Unit tests
+        env:
+          CI: "true"
+        run: '"$PM" test'
+
+  eval-scorecard:
+    name: "Eval scorecard"
+    uses: ./.github/workflows/eval-scorecard.yml
+    secrets: inherit
+
+  eval-fairness:
+    name: "Fairness eval (opt-in)"
+    uses: ./.github/workflows/eval-fairness.yml
+    secrets: inherit
+    with:
+      fairness_mode: warn
+
+  eval-hallucination:
+    name: "Hallucination eval (hard-fail)"
+    uses: ./.github/workflows/eval-hallucination.yml
+    secrets: inherit
+
+  eval-ttft-live:
+    name: "TTFT live (opt-in)"
+    uses: ./.github/workflows/eval-ttft-live.yml
+    secrets: inherit

@@ -1,14 +1,37 @@
-# Org-owned risk register (SEC-RISK-001).
-# Copy to .agent-rfc/security/risk_register.yaml and fill with real risks.
-# Harness validates schema only — not content truth.
+# Risk register (SEC-RISK-001) for an AgentSmith scratch tenant.
+#
+# This repo is a TEST FIXTURE, not a product: a minimal app that AgentSmith's
+# scratch-tenants workflow rebuilds so the framework's onboarding path runs
+# through real CI (AgentSmith docs/scratch-tenants.md). The entries below
+# describe the fixture's actual residual risks. They are filled in so the
+# strict security harness is expected green here, which lets any red run mean
+# a framework regression rather than an un-edited template.
+#
+# ONE copy serves every scratch tenant: AgentSmith's
+# .github/scratch-tenants/security-pack/, which build.sh copies in. Edit it
+# there, not in a scratch repo.
 version: 1
 entries:
-  - id: RISK-EXAMPLE-001
-    description: Example residual risk — replace with organisation-owned entry.
-    severity: medium
+  - id: RISK-SCRATCH-001
+    description: >-
+      Provisioned framework code (scripts/, runtime/, workflows) is replaced by
+      automation on every scratch-tenants run; a regression in AgentSmith lands
+      here before any real tenant sees it.
+    severity: low
     mitigations:
-      - Document accepted residual risk and owner.
-      - Link compensating SEC-* controls below.
+      - Private repository with no deployment target, secrets or users.
+      - The scratch-tenants workflow fails when this repo's CI is not green.
     control_ids:
       - SEC-RISK-001
-      - SEC-HITL-001
+      - SEC-CHANGE-001
+  - id: RISK-SCRATCH-002
+    description: >-
+      Eval gates run without judge credentials, so they skip rather than grade;
+      a green eval job here is not evidence of model quality.
+    severity: low
+    mitigations:
+      - No model output from this repo is used anywhere.
+      - Guard-based suites (adversarial, rag_poison) still run deterministically.
+    control_ids:
+      - SEC-EVAL-001
+      - SEC-RAG-001

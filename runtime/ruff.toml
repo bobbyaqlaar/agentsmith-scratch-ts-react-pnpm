@@ -32,7 +32,6 @@ extend-exclude = [
   "provider_dispatch.py",
   "replay_webhook_server.py",
   "requirements-runtime.txt",
-  "ruff.toml",
   "security_paths.py",
   "self_correction.py",
   "structured_output.py",

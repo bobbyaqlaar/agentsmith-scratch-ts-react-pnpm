@@ -25,11 +25,10 @@ jobs:
       # security/runners/delegating.py), which need real deps to import. With
       # the minimal set they fail on a missing dev dependency and report it as
       # a compliance violation — a hollow job is not a light one.
-      # Guarded like ci-python-fastapi.yml's own install step — a tenant on
-      # uv/poetry with no requirements.txt (AqlaarTeleologyStudio, found
-      # checking CI after onboarding) must not hard-fail this step just
-      # because the file doesn't exist.
-      - run: if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      # The same install ci-python-fastapi.yml uses (requirements.txt, else
+      # uv.lock; a warning for anything else). It used to be a copy of that
+      # step's guard, and missed uv when only the original learned it.
+      - uses: ./.github/actions/install-python-deps
       # httpx + tenacity are the runtime's own core dependencies (pyproject.toml
       # `dependencies`). Without them SEC-BUDGET-001 failed in every tenant
       # with no requirements.txt — AqlaarTeleologyStudio: three of

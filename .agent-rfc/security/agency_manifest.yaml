@@ -1,7 +1,13 @@
-# High-impact actions requiring HITL (SEC-AGENCY-001).
-# Copy to .agent-rfc/security/agency_manifest.yaml
+# High-impact actions requiring HITL (SEC-AGENCY-001) for an AgentSmith
+# scratch tenant.
+#
+# TEST FIXTURE (AgentSmith docs/scratch-tenants.md), one copy for every
+# scratch tenant: .github/scratch-tenants/security-pack/, copied in by
+# build.sh. The app has no agent workflows; this declares the one action that
+# would be high-impact if it did, so the manifest is an edited declaration
+# rather than the shipped placeholder.
 version: 1
 actions:
-  - workflow: example_workflow
-    action: high_impact_step
+  - workflow: scratch_release
+    action: deploy_to_production
     needs_hitl: true

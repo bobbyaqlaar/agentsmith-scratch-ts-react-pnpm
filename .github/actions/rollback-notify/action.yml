@@ -36,40 +36,91 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # Which commit failed, and the one message both webhooks send.
+    #
+    # The commit was `github.sha`, which is right for a push-triggered run and
+    # wrong under `workflow_run` — how cd-staging.yml and cd-production.yml
+    # have been triggered since they were gated on CI: there it is the default
+    # branch's latest commit, not the commit being deployed. Precedence, most
+    # exact first:
+    #   1. the checked-out HEAD — what the calling job actually deployed (the
+    #      CD templates check out workflow_run.head_sha; build-push-ghcr tags
+    #      the image from the same HEAD);
+    #   2. the triggering CI run's head_sha, when the job has no checkout;
+    #   3. github.sha — correct for push and workflow_dispatch triggers.
+    #
+    # Values arrive through env, never `${{ }}` inside the script: an input
+    # holding a quote used to break the JSON payload and the shell around it.
+    - name: "Describe the failure"
+      shell: bash
+      env:
+        RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        EVENT_SHA: ${{ github.sha }}
+        REPOSITORY: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ENVIRONMENT_LABEL: ${{ inputs.environment_label }}
+        FAILURE_CONTEXT: ${{ inputs.failure_context }}
+      run: |
+        if commit="$(git rev-parse --verify -q HEAD 2>/dev/null)" && [ -n "$commit" ]; then
+          source="checked-out HEAD"
+        elif [ -n "$RUN_HEAD_SHA" ]; then
+          commit="$RUN_HEAD_SHA"; source="triggering CI run"
+        else
+          commit="$EVENT_SHA"; source="event commit"
+        fi
+        text="🛑 $ENVIRONMENT_LABEL deploy failed: $FAILURE_CONTEXT — $REPOSITORY@$commit ($RUN_URL)"
+        # One line: a newline would start a new $GITHUB_ENV entry, and a raw
+        # newline or tab is invalid inside a JSON string. Then JSON-escape
+        # backslash and quote. Other control characters are not handled: the
+        # inputs are labels the calling workflow writes, not external text.
+        text="${text//$'\n'/ }"; text="${text//$'\r'/ }"; text="${text//$'\t'/ }"
+        escaped="${text//\\/\\\\}"; escaped="${escaped//\"/\\\"}"
+        echo "Failed commit: $commit ($source)"
+        {
+          echo "ROLLBACK_NOTIFY_COMMIT=$commit"
+          echo "ROLLBACK_NOTIFY_PAYLOAD={\"text\": \"$escaped\"}"
+        } >> "$GITHUB_ENV"
+
     - name: "Notify Slack"
       if: inputs.slack_webhook_url != ''
       shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
       run: |
-        curl -s -X POST "${{ inputs.slack_webhook_url }}" \
-          -H "Content-Type: application/json" \
-          -d "{\"text\": \"🛑 ${{ inputs.environment_label }} deploy failed: ${{ inputs.failure_context }} — ${{ github.repository }}@${{ github.sha }} (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"}" \
+        curl -s -X POST "$WEBHOOK_URL" -H "Content-Type: application/json" -d "$ROLLBACK_NOTIFY_PAYLOAD" \
           || echo "⚠️  Slack notify failed (non-fatal)"
 
     - name: "Notify Teams"
       if: inputs.teams_webhook_url != ''
       shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.teams_webhook_url }}
       run: |
-        curl -s -X POST "${{ inputs.teams_webhook_url }}" \
-          -H "Content-Type: application/json" \
-          -d "{\"text\": \"🛑 ${{ inputs.environment_label }} deploy failed: ${{ inputs.failure_context }} — ${{ github.repository }}@${{ github.sha }} (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"}" \
+        curl -s -X POST "$WEBHOOK_URL" -H "Content-Type: application/json" -d "$ROLLBACK_NOTIFY_PAYLOAD" \
           || echo "⚠️  Teams notify failed (non-fatal)"
 
     - name: "Run rollback"
       shell: bash
+      env:
+        ROLLBACK_COMMAND: ${{ inputs.rollback_command }}
+        ENVIRONMENT_LABEL: ${{ inputs.environment_label }}
+        FAILURE_CONTEXT: ${{ inputs.failure_context }}
       run: |
-        if [ -z "${{ inputs.rollback_command }}" ]; then
-          echo "🛑 ${{ inputs.failure_context }} — no ROLLBACK_COMMAND configured for ${{ inputs.environment_label }}."
+        if [ -z "$ROLLBACK_COMMAND" ]; then
+          echo "🛑 $FAILURE_CONTEXT — no ROLLBACK_COMMAND configured for $ENVIRONMENT_LABEL (failed commit $ROLLBACK_NOTIFY_COMMIT)."
           echo "   Configure your platform's rollback, e.g.:"
           echo "     Fly.io:   fly releases list && fly deploy --image <prev-image>"
           echo "     Railway:  railway rollback"
           echo "     AWS ECS:  aws ecs update-service --task-definition <prev-arn>"
         else
-          echo "⏪ Running rollback for ${{ inputs.environment_label }}..."
-          eval "${{ inputs.rollback_command }}"
+          echo "⏪ Running rollback for $ENVIRONMENT_LABEL (failed commit $ROLLBACK_NOTIFY_COMMIT)..."
+          eval "$ROLLBACK_COMMAND"
         fi
 
     - name: "Fail the job"
       shell: bash
+      env:
+        FAILURE_CONTEXT: ${{ inputs.failure_context }}
       run: |
-        echo "❌ ${{ inputs.failure_context }} — failing workflow (red status preserved after rollback)."
+        echo "❌ $FAILURE_CONTEXT — failing workflow (red status preserved after rollback)."
         exit 1

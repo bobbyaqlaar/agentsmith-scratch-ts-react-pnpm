@@ -4,8 +4,9 @@ scripts/process_gate.py — design before code, review before merge, enforced.
 
 docs/design-review-checklist.md and docs/review-levers.md were written down and
 skipped: nothing put them in an agent's context, and nothing checked. This is
-the one implementation every enforcement layer calls (docs/process-gates.md,
-design: .agent-rfc/designs/process-gates.md):
+the one implementation every enforcement layer calls, in AgentSmith and in any
+tenant that adopts it (docs/process-gates.md; designs:
+.agent-rfc/designs/process-gates.md, process-gates-tenants.md):
 
     session-start   Claude Code SessionStart hook — states the rules and gates
     pre-edit        Claude Code PreToolUse hook — denies an edit to a gated
@@ -14,8 +15,13 @@ design: .agent-rfc/designs/process-gates.md):
                     changes that have no clean review newer than them
     commit-msg F    .githooks/commit-msg — the staged commit needs Design: and
                     Review: trailers that resolve
-    ci              Self-Test — the same per-commit checks over a pushed range,
-                    plus CHANGELOG.md for tenant-facing changes
+    ci              CI — the same per-commit checks over a pushed range, plus a
+                    CHANGELOG rule where the repo declares one
+
+What a repo gates is declared in its own `.agenticframework/process-gates.json`
+(CONFIG below). A repo without one has not adopted the gates: the local hooks
+do nothing there, and `ci` fails, because CI running the gate means the repo
+had adopted it.
 
 Stdlib only and Python 3.9-compatible: hooks run whatever `python3` is on PATH,
 and on a stock Mac that is 3.9 without pyyaml.
@@ -36,33 +42,19 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+CONFIG = ".agenticframework/process-gates.json"
 DESIGNS_DIR = ".agent-rfc/designs"
 REVIEWS_DIR = ".agent-rfc/reviews"
-LEVERS_DOC = "docs/review-levers.md"
-
-# ── The one catalog of what the gates cover ──────────────────────────────────
-
-# Code, configuration, and anything a tenant receives.
-GATED = (
-    "scripts/**", "runtime/**", "hooks/**", "portal/**", "workflow-templates/**",
-    ".github/**", "templates/**", "enterprise/**", "examples/**", "fixtures/**",
-    "init-db/**", "caddy/**", ".githooks/**",
-    "install-ai-stack.sh", "pyproject.toml", "pytest.ini", "requirements*.txt",
-    "docker-compose*.yml", ".claude/settings.json",
-)
-# Never gated, even under a gated directory.
-NOT_GATED = ("**.md", ".agent-rfc/**", "**/node_modules/**")
-
-# Changes a tenant receives, so CHANGELOG.md must say so. Pinned against the
-# paths .github/workflows/scratch-tenants.yml rebuilds tenants on
-# (scripts/test/test_process_gate.py), which adds only its own two entries.
-TENANT_FACING = (
-    "hooks/**", "install-ai-stack.sh", "workflow-templates/**", ".github/actions/**",
-    "scripts/**", "runtime/**", "fixtures/**", "templates/agent-rules.yaml",
-)
-TENANT_FACING_EXCEPT = ("scripts/test/**", "runtime/test/**")
+FRAMEWORK_PREFIX = "@framework/"
+# The directory this script was installed from: an AgentSmith checkout, or
+# ~/.agent-framework. `@framework/<path>` in a config resolves against it.
+FRAMEWORK_ROOT = Path(__file__).resolve().parents[1]
 
 SMALL_CHANGE_LINES = 20
+Reader = Callable[[str], Optional[str]]
+
+
+# ── Globs ────────────────────────────────────────────────────────────────────
 
 _GLOB_CACHE: Dict[str, "re.Pattern[str]"] = {}
 
@@ -93,12 +85,69 @@ def _any(path: str, patterns) -> bool:
     return any(glob_match(path, p) for p in patterns)
 
 
-def is_gated(path: str) -> bool:
-    return _any(path, GATED) and not _any(path, NOT_GATED)
+# ── Configuration ────────────────────────────────────────────────────────────
 
 
-def is_tenant_facing(path: str) -> bool:
-    return _any(path, TENANT_FACING) and not _any(path, TENANT_FACING_EXCEPT) and not path.endswith(".md")
+class Config:
+    """A repo's declaration of what the gates cover (`CONFIG`)."""
+
+    def __init__(self, data: dict) -> None:
+        self.gated: List[str] = list(data.get("gated") or [])
+        self.not_gated: List[str] = list(data.get("not_gated") or [])
+        self.levers_doc: str = data.get("levers_doc") or "docs/review-levers.md"
+        self.design_checklist: str = data.get("design_checklist") or "docs/design-review-checklist.md"
+        changelog = data.get("changelog") or {}
+        self.changelog_file: Optional[str] = changelog.get("file")
+        self.changelog_paths: List[str] = list(changelog.get("paths") or [])
+        self.changelog_except: List[str] = list(changelog.get("except") or [])
+
+    def problems(self) -> List[str]:
+        errors = []
+        if not self.gated:
+            errors.append(f"{CONFIG} declares no gated paths")
+        elif not self.is_gated(CONFIG):
+            errors.append(f"{CONFIG} must gate itself, or the gates can be switched off unreviewed")
+        if self.changelog_file and not self.changelog_paths:
+            errors.append(f"{CONFIG} names a changelog file but no paths that require it")
+        return errors
+
+    def is_gated(self, path: str) -> bool:
+        return _any(path, self.gated) and not _any(path, self.not_gated)
+
+    def needs_changelog(self, path: str) -> bool:
+        return bool(self.changelog_file) and _any(path, self.changelog_paths) \
+            and not _any(path, self.changelog_except) and not path.endswith(".md")
+
+    def doc_text(self, value: str, read: Reader) -> Optional[str]:
+        """A repo path is read at the commit being checked; `@framework/…`
+        beside this script, because an installed-mode tenant carries no copy."""
+        if value.startswith(FRAMEWORK_PREFIX):
+            path = FRAMEWORK_ROOT / value[len(FRAMEWORK_PREFIX):]
+            return path.read_text(encoding="utf-8") if path.is_file() else None
+        return read(value)
+
+    def display(self, value: str) -> str:
+        if value.startswith(FRAMEWORK_PREFIX):
+            return f"{value[len(FRAMEWORK_PREFIX):]} in your AgentSmith checkout or ~/.agent-framework"
+        return value
+
+
+def parse_config(text: Optional[str]) -> Tuple[Optional[Config], List[str]]:
+    """-> (config, problems). (None, []) when there is no config: not adopted."""
+    if text is None:
+        return None, []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, [f"{CONFIG} is not valid JSON: {exc}"]
+    if not isinstance(data, dict):
+        return None, [f"{CONFIG} must be a JSON object"]
+    config = Config(data)
+    return config, config.problems()
+
+
+def lever_slugs(levers_text: str) -> set:
+    return set(re.findall(r"^- `([a-z0-9-]+)`", levers_text, re.M))
 
 
 # ── Records ──────────────────────────────────────────────────────────────────
@@ -132,11 +181,7 @@ def _section(body: str, heading: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def lever_slugs(levers_text: str) -> set:
-    return set(re.findall(r"^- `([a-z0-9-]+)`", levers_text, re.M))
-
-
-def check_design(text: str, known_slugs: set) -> List[str]:
+def check_design(text: str, known_slugs: set, levers_doc: str = "docs/review-levers.md") -> List[str]:
     errors = []
     meta, body = front_matter(text)
     if not meta:
@@ -154,7 +199,7 @@ def check_design(text: str, known_slugs: set) -> List[str]:
     # the checklist was worked and at least one lever named.
     cited = set(re.findall(r"`([a-z0-9]+(?:-[a-z0-9]+)+)`", _section(body, "Levers") or ""))
     if not cited & known_slugs:
-        errors.append(f"'## Levers' cites no lever from {LEVERS_DOC} — work its checklist and name what applied")
+        errors.append(f"'## Levers' cites no lever from {levers_doc} — work its checklist and name what applied")
     return errors
 
 
@@ -205,16 +250,18 @@ def check_change(
     files: List[str],
     gated_lines: int,
     message: str,
-    read: Callable[[str], Optional[str]],
-    known_slugs: set,
+    read: Reader,
+    config: Config,
 ) -> Tuple[List[str], List[str]]:
     """One commit's worth of files against its message. -> (errors, notes)."""
-    gated = sorted(f for f in files if is_gated(f))
+    gated = sorted(f for f in files if config.is_gated(f))
     if not gated:
         return [], []
     errors: List[str] = []
     notes: List[str] = []
     small = gated_lines <= SMALL_CHANGE_LINES
+    known_slugs = lever_slugs(config.doc_text(config.levers_doc, read) or "")
+    levers_shown = config.display(config.levers_doc)
 
     def na(name: str, value: str) -> bool:
         match = re.match(r"^n/?a\s*[:—-]\s*(\S.*)$", value, re.I)
@@ -241,7 +288,7 @@ def check_change(
         elif text is None:
             errors.append(f"Design: {path} does not exist in this commit")
         else:
-            errors.extend(f"Design: {path} {e}" for e in check_design(text, known_slugs))
+            errors.extend(f"Design: {path} {e}" for e in check_design(text, known_slugs, levers_shown))
             scope = design_scope(text)
             uncovered = [f for f in gated if not _any(f, scope)]
             if scope and uncovered:
@@ -282,15 +329,28 @@ def repo_root(start: Optional[str] = None) -> Path:
     return Path(out) if out else Path(start or os.getcwd())
 
 
-def known_slugs_at(read: Callable[[str], Optional[str]]) -> set:
-    return lever_slugs(read(LEVERS_DOC) or "")
+def _reader_at(root: Path, rev: str) -> Reader:
+    """`rev` "" reads the index; otherwise a commit."""
+    def read(path: str) -> Optional[str]:
+        result = subprocess.run(
+            ["git", "show", f"{rev}:{path}"], cwd=root, capture_output=True, text=True, check=False
+        )
+        return result.stdout if result.returncode == 0 else None
+    return read
 
 
-def _gated_lines(numstat: str) -> int:
+def _worktree_reader(root: Path) -> Reader:
+    def read(path: str) -> Optional[str]:
+        target = root / path
+        return target.read_text(encoding="utf-8") if target.is_file() else None
+    return read
+
+
+def _gated_lines(numstat: str, config: Config) -> int:
     total = 0
     for line in numstat.splitlines():
         parts = line.split("\t")
-        if len(parts) >= 3 and is_gated(parts[2]):
+        if len(parts) >= 3 and config.is_gated(parts[2]):
             added, removed = parts[0], parts[1]
             # A binary file ("-") counts as more than a small change.
             total += int(added) if added.isdigit() else SMALL_CHANGE_LINES + 1
@@ -301,15 +361,27 @@ def _gated_lines(numstat: str) -> int:
 # ── Subcommands ──────────────────────────────────────────────────────────────
 
 
-def active_designs(root: Path) -> List[Tuple[str, str, List[str]]]:
+def _worktree_config(root: Path) -> Tuple[Optional[Config], List[str]]:
+    return parse_config(_worktree_reader(root)(CONFIG))
+
+
+def active_designs(root: Path, config: Config) -> List[Tuple[str, str, List[str]]]:
     """-> [(relpath, text, errors)] for designs with status: active."""
-    slugs = lever_slugs((root / LEVERS_DOC).read_text(encoding="utf-8")) if (root / LEVERS_DOC).is_file() else set()
+    read = _worktree_reader(root)
+    slugs = lever_slugs(config.doc_text(config.levers_doc, read) or "")
     found = []
     for path in sorted((root / DESIGNS_DIR).glob("*.md")):
         text = path.read_text(encoding="utf-8")
         if front_matter(text)[0].get("status") == "active":
-            found.append((f"{DESIGNS_DIR}/{path.name}", text, check_design(text, slugs)))
+            errors = check_design(text, slugs, config.display(config.levers_doc))
+            found.append((f"{DESIGNS_DIR}/{path.name}", text, errors))
     return found
+
+
+def _deny(reason: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason,
+    }}))
 
 
 def cmd_pre_edit(payload: dict) -> int:
@@ -322,31 +394,34 @@ def cmd_pre_edit(payload: dict) -> int:
         rel = Path(target).resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return 0  # outside this repository
-    if not is_gated(rel):
+    config, problems = _worktree_config(root)
+    if problems:
+        # A broken config is not an absent one: the repo adopted the gates.
+        if rel != CONFIG:
+            # It cannot say what is gated, so nothing but the config itself may change.
+            _deny(f"the process-gate config is broken — {'; '.join(problems)}. Fix {CONFIG} first.")
         return 0
-    designs = active_designs(root)
+    if config is None or not config.is_gated(rel):
+        return 0
+    designs = active_designs(root, config)
     covering = [(p, errs) for p, text, errs in designs if _any(rel, design_scope(text))]
-    valid = [p for p, errs in covering if not errs]
-    if valid:
+    if [p for p, errs in covering if not errs]:
         return 0
     if covering:
-        problems = "; ".join(f"{p}: {'; '.join(errs)}" for p, errs in covering)
-        reason = f"{rel} is covered by a design note that is not complete — {problems}."
-    else:
-        reason = (
-            f"{rel} is a gated path and no active design note covers it. Design before code: "
-            f"work docs/design-review-checklist.md, write {DESIGNS_DIR}/<slug>.md "
-            "(front matter status: active, scope: globs covering this file; sections ## Problem, "
-            "## Approach, ## Levers citing levers from docs/review-levers.md), then retry. "
-            "See docs/process-gates.md."
-        )
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason,
-    }}))
+        detail = "; ".join(f"{p}: {'; '.join(errs)}" for p, errs in covering)
+        _deny(f"{rel} is covered by a design note that is not complete — {detail}.")
+        return 0
+    _deny(
+        f"{rel} is a gated path and no active design note covers it. Design before code: "
+        f"work {config.display(config.design_checklist)}, write {DESIGNS_DIR}/<slug>.md "
+        "(front matter status: active, scope: globs covering this file; sections ## Problem, "
+        f"## Approach, ## Levers citing levers from {config.display(config.levers_doc)}), then retry. "
+        "See AgentSmith's docs/process-gates.md."
+    )
     return 0
 
 
-def _uncommitted_gated(root: Path) -> List[str]:
+def _uncommitted_gated(root: Path, config: Config) -> List[str]:
     out = git("status", "--porcelain", "-uall", cwd=root, check=False)
     paths = []
     for line in out.splitlines():
@@ -354,17 +429,21 @@ def _uncommitted_gated(root: Path) -> List[str]:
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
         path = path.strip('"')
-        if is_gated(path):
+        if config.is_gated(path):
             paths.append(path)
     return sorted(set(paths))
 
 
 def stop_problems(root: Path) -> List[str]:
-    changed = _uncommitted_gated(root)
+    config, problems = _worktree_config(root)
+    if problems:
+        return problems
+    if config is None:
+        return []
+    changed = _uncommitted_gated(root, config)
     if not changed:
         return []
-    designs = active_designs(root)
-    problems = []
+    designs = active_designs(root, config)
     by_design: Dict[str, List[str]] = {}
     for path in changed:
         covering = [p for p, text, errs in designs if not errs and _any(path, design_scope(text))]
@@ -386,7 +465,7 @@ def stop_problems(root: Path) -> List[str]:
         if review_path.stat().st_mtime < newest:
             problems.append(
                 f"{review}: last updated before the newest change it covers — run a review pass "
-                f"against docs/review-levers.md over {', '.join(paths)} and record it"
+                f"against {config.display(config.levers_doc)} over {', '.join(paths)} and record it"
             )
     return problems
 
@@ -401,39 +480,47 @@ def cmd_stop(payload: dict) -> int:
         # Blocking again could loop forever. The commit and CI gates still hold.
         print(json.dumps({"systemMessage": "⚠️ Turn ended with " + text}))
     else:
-        print(json.dumps({"decision": "block", "reason": text + "\nSee docs/process-gates.md."}))
+        print(json.dumps({"decision": "block", "reason": text + "\nSee AgentSmith's docs/process-gates.md."}))
     return 0
 
 
 def cmd_session_start(payload: dict) -> int:
     root = repo_root(payload.get("cwd"))
-    designs = active_designs(root)
-    hooks_path = git("config", "--get", "core.hooksPath", cwd=root, check=False).strip()
-    lines = [
-        "This repository enforces its build discipline mechanically (docs/process-gates.md).",
-        "1. Design before code: before editing code, work docs/design-review-checklist.md and write "
-        f"{DESIGNS_DIR}/<slug>.md (status: active, scope globs, ## Problem / ## Approach / ## Levers). "
-        "Edits to gated paths without one are denied.",
-        "2. Review before done: after building, run review passes against docs/review-levers.md, verify each "
-        f"finding in code, fix, and record every pass in {REVIEWS_DIR}/<slug>.md as "
-        "'## Pass N — findings: K' until a pass finds 0. Ending a turn with unreviewed changes is blocked.",
-        "3. Every commit touching gated paths carries 'Design: <design path>' and 'Review: <review path>' "
-        "trailers, and changes the review record in that same commit. CI (Self-Test 'process-gates') "
-        "checks every pushed commit, and CHANGELOG.md for tenant-facing paths.",
-        "Bash-made edits are not caught by the edit gate — the stop, commit and CI gates still see them.",
-    ]
-    if designs:
-        lines.append("Active designs: " + ", ".join(p for p, _, _ in designs))
-    if not (root / "AGENTS.md").is_file() and (root / "scripts/generate-ide-config.py").is_file():
-        # Other agents (Codex, Cursor, Gemini, Copilot) read these, not this hook.
-        lines.append(
-            "⚠️ This clone has no generated agent files (AGENTS.md, .cursorrules, …): run "
-            "`python3 scripts/generate-ide-config.py --repo-root .` (needs pyyaml; the files are gitignored)."
-        )
-    if hooks_path != ".githooks":
-        lines.append(
-            "⚠️ The commit gate is not armed in this clone: run `git config core.hooksPath .githooks`."
-        )
+    config, problems = _worktree_config(root)
+    if config is None and not problems:
+        return 0  # this repository has not adopted the gates
+    if problems:
+        lines = [
+            f"⚠️ The process-gate config is broken: {'; '.join(problems)}. "
+            f"Every edit except to {CONFIG} is denied until it is fixed — it cannot say what is gated."
+        ]
+    else:
+        designs = active_designs(root, config)
+        checklist, levers = config.display(config.design_checklist), config.display(config.levers_doc)
+        lines = [
+            "This repository enforces its build discipline mechanically (AgentSmith docs/process-gates.md).",
+            f"1. Design before code: before editing code, work {checklist} and write "
+            f"{DESIGNS_DIR}/<slug>.md (status: active, scope globs, ## Problem / ## Approach / ## Levers). "
+            "Edits to gated paths without one are denied.",
+            f"2. Review before done: after building, run review passes against {levers}, verify each "
+            f"finding in code, fix, and record every pass in {REVIEWS_DIR}/<slug>.md as "
+            "'## Pass N — findings: K' until a pass finds 0. Ending a turn with unreviewed changes is blocked.",
+            "3. Every commit touching gated paths carries 'Design: <design path>' and 'Review: <review path>' "
+            "trailers, and changes the review record in that same commit. CI checks every pushed commit"
+            + (f", and {config.changelog_file} for the paths that need it." if config.changelog_file else "."),
+            f"Gated paths are declared in {CONFIG}. Bash-made edits are not caught by the edit gate — "
+            "the stop, commit and CI gates still see them.",
+        ]
+        if designs:
+            lines.append("Active designs: " + ", ".join(p for p, _, _ in designs))
+        if not (root / "AGENTS.md").is_file() and (root / "scripts/generate-ide-config.py").is_file():
+            # Other agents (Codex, Cursor, Gemini, Copilot) read these, not this hook.
+            lines.append(
+                "⚠️ This clone has no generated agent files (AGENTS.md, .cursorrules, …): run "
+                "`python3 scripts/generate-ide-config.py --repo-root .` (needs pyyaml; the files are gitignored)."
+            )
+    if git("config", "--get", "core.hooksPath", cwd=root, check=False).strip() != ".githooks":
+        lines.append("⚠️ The commit gate is not armed in this clone: run `git config core.hooksPath .githooks`.")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}))
     return 0
 
@@ -443,6 +530,13 @@ _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 def cmd_commit_msg(message_file: str, amend: bool = False) -> int:
     root = repo_root()
+    read = _reader_at(root, "")  # the index: what this commit will contain
+    config, problems = parse_config(read(CONFIG))
+    if problems:
+        print(f"❌ process gate: commit blocked — {'; '.join(problems)}", file=sys.stderr)
+        return 1
+    if config is None:
+        return 0  # the commit does not carry a config: this repo has not adopted the gates
     message = "\n".join(
         line for line in Path(message_file).read_text(encoding="utf-8").splitlines() if not line.startswith("#")
     )
@@ -452,18 +546,16 @@ def cmd_commit_msg(message_file: str, amend: bool = False) -> int:
     if amend:
         parent = git("rev-parse", "--verify", "-q", "HEAD^", cwd=root, check=False).strip()
         base = [parent or _EMPTY_TREE]
+    elif not git("rev-parse", "--verify", "-q", "HEAD", cwd=root, check=False).strip():
+        base = [_EMPTY_TREE]
     files = [f for f in git("diff", "--cached", "--name-only", *base, cwd=root).splitlines() if f]
-    lines = _gated_lines(git("diff", "--cached", "--numstat", *base, cwd=root))
+    lines = _gated_lines(git("diff", "--cached", "--numstat", *base, cwd=root), config)
 
-    def read(path: str) -> Optional[str]:
-        result = subprocess.run(["git", "show", f":{path}"], cwd=root, capture_output=True, text=True, check=False)
-        return result.stdout if result.returncode == 0 else None
-
-    errors, notes = check_change(files, lines, message, read, known_slugs_at(read))
+    errors, notes = check_change(files, lines, message, read, config)
     for note in notes:
         print(f"ℹ️  process gate: {note}")
     if errors:
-        print("❌ process gate: commit blocked (docs/process-gates.md)", file=sys.stderr)
+        print("❌ process gate: commit blocked (AgentSmith docs/process-gates.md)", file=sys.stderr)
         for error in errors:
             print(f"   - {error}", file=sys.stderr)
         return 1
@@ -479,41 +571,66 @@ def _range_commits(root: Path, base: str, head: str) -> Tuple[List[str], Optiona
     return [c for c in out.splitlines() if c], None
 
 
+def _report(lines: List[str], annotations: List[str]) -> None:
+    text = "\n".join(lines)
+    print(text)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    for annotation in annotations:
+        print(annotation)
+
+
 def cmd_ci(base: str, head: str) -> int:
     root = repo_root()
+    head_config, head_problems = parse_config(_reader_at(root, head)(CONFIG))
+    if head_config is None or head_problems:
+        why = "; ".join(head_problems) or (
+            f"{CONFIG} is missing at {head[:12]} — this CI runs the process gate, so the repo adopted it, "
+            "and a missing config means the gates were removed"
+        )
+        _report(["## Process gates", "", f"- ❌ {why}"], [f"::error title=Process gate::{why}"])
+        return 1
+
     commits, caveat = _range_commits(root, base, head)
     failures: List[Tuple[str, str, List[str]]] = []
     escapes: List[Tuple[str, str, str]] = []
+    unadopted: List[Tuple[str, str]] = []
     range_files: set = set()
     gated_commits = 0
     for commit in commits:
         listed = git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit, cwd=root)
         files = [f for f in listed.splitlines() if f]
         range_files.update(files)
-        if not any(is_gated(f) for f in files):
-            continue
-        gated_commits += 1
-        lines = _gated_lines(git("diff-tree", "--no-commit-id", "--numstat", "-r", "--root", commit, cwd=root))
         message = git("log", "-1", "--format=%B", commit, cwd=root)
         subject = message.splitlines()[0] if message else ""
-
-        def read(path: str, _c: str = commit) -> Optional[str]:
-            result = subprocess.run(
-                ["git", "show", f"{_c}:{path}"], cwd=root, capture_output=True, text=True, check=False
-            )
-            return result.stdout if result.returncode == 0 else None
-
-        errors, notes = check_change(files, lines, message, read, known_slugs_at(read))
+        read = _reader_at(root, commit)
+        # Each commit is judged by the config it carries: a commit from before
+        # adoption is listed, not failed.
+        config, problems = parse_config(read(CONFIG))
+        if problems:
+            failures.append((commit, subject, problems))
+            continue
+        if config is None:
+            unadopted.append((commit, subject))
+            continue
+        if not any(config.is_gated(f) for f in files):
+            continue
+        gated_commits += 1
+        lines = _gated_lines(git("diff-tree", "--no-commit-id", "--numstat", "-r", "--root", commit, cwd=root), config)
+        errors, notes = check_change(files, lines, message, read, config)
         if errors:
             failures.append((commit, subject, errors))
         escapes.extend((commit, subject, n) for n in notes)
 
-    tenant = sorted(f for f in range_files if is_tenant_facing(f))
     changelog_error = None
-    if tenant and "CHANGELOG.md" not in range_files:
+    needing = sorted(f for f in range_files if head_config.needs_changelog(f))
+    if needing and head_config.changelog_file not in range_files:
         changelog_error = (
-            f"tenant-facing paths changed ({', '.join(tenant[:6])}{' …' if len(tenant) > 6 else ''}) "
-            "and CHANGELOG.md [Unreleased] was not updated in this range"
+            f"changed paths that need a {head_config.changelog_file} entry "
+            f"({', '.join(needing[:6])}{' …' if len(needing) > 6 else ''}), and {head_config.changelog_file} "
+            "was not updated in this range"
         )
 
     report = [
@@ -529,19 +646,14 @@ def cmd_ci(base: str, head: str) -> int:
         report.append(f"- ❌ {changelog_error}")
     for commit, subject, note in escapes:
         report.append(f"- ⚠️ `{commit[:10]}` {subject} — {note}")
+    for commit, subject in unadopted:
+        report.append(f"- ℹ️ `{commit[:10]}` {subject} — before this repo adopted the gates; not checked")
     if not failures and not changelog_error:
         report.append("- ✅ every gated commit carries a resolving Design and a clean, same-commit Review")
-    text = "\n".join(report)
-    print(text)
-    summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if summary:
-        with open(summary, "a", encoding="utf-8") as fh:
-            fh.write(text + "\n")
-    for commit, _subject, errors in failures:
-        for error in errors:
-            print(f"::error title=Process gate {commit[:10]}::{error}")
+    annotations = [f"::error title=Process gate {c[:10]}::{e}" for c, _s, errs in failures for e in errs]
     if changelog_error:
-        print(f"::error title=Process gate::{changelog_error}")
+        annotations.append(f"::error title=Process gate::{changelog_error}")
+    _report(report, annotations)
     return 1 if failures or changelog_error else 0
 
 
@@ -571,11 +683,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             # Fail CLOSED. Claude Code treats a crashed PreToolUse hook as a
             # non-blocking error and lets the edit through — so a gate that
             # cannot evaluate would silently stop gating.
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": f"process gate could not evaluate this edit ({exc!r}) — "
-                "fix scripts/process_gate.py or its input before editing gated paths",
-            }}))
+            _deny(f"process gate could not evaluate this edit ({exc!r}) — "
+                  "fix process_gate.py or its input before editing gated paths")
             return 0
     if args.command == "commit-msg":
         return cmd_commit_msg(args.message_file, amend=args.amend)

@@ -11,7 +11,7 @@ data:
   # worker.py startup (see runtime/worker.py main(), "Unknown WORKER_BACKEND").
   # No static link from this file to that Python code, so a typo here
   # (e.g. "temporral") still passes `kubectl apply` and only surfaces once the
-  # pod starts — kept in sync by hand; see docs/PRODUCT_BACKLOG.md 4.5.
+  # pod starts — kept in sync by hand.
   WORKER_BACKEND: "temporal"
   # Per-tenant Phoenix project — dedicated tenants get no cross-tenant query
   # access (§30). Point this at a Phoenix instance/project scoped to this

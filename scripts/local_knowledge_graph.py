@@ -272,6 +272,11 @@ class AgentKnowledgeGraph:
         return json.dumps(nx_json.node_link_data(self._g), indent=2, default=str)
 
 
+# The impact computation lives in gate_kg.py, which the process gate can import
+# without networkx or the scripts/ helpers. Re-exported here so the CLI below
+# and `from local_knowledge_graph import impact` both reach the same one.
+from gate_kg import Impact, changed_files, impact, render_impact  # noqa: E402,F401
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -283,6 +288,10 @@ if __name__ == "__main__":
         "--context", metavar="FILE", help="Fetch subgraph context for FILE"
     )
     parser.add_argument("--symbol", metavar="SYMBOL", help="Find files defining SYMBOL")
+    parser.add_argument("--impact", action="store_true",
+                        help="What a change touches: the files to read, the lever groups, and the KG query hash")
+    parser.add_argument("--base", default="HEAD", metavar="REF",
+                        help="With --impact: the ref to diff against (default HEAD)")
     parser.add_argument(
         "--hops", type=int, default=2, help="Subgraph hop depth (default: 2)"
     )
@@ -290,7 +299,11 @@ if __name__ == "__main__":
 
     kg = AgentKnowledgeGraph()
 
-    if args.stats:
+    if args.impact:
+        graph_path = _graph_path()
+        graph = json.loads(graph_path.read_text(encoding="utf-8")) if graph_path.is_file() else {}
+        print(render_impact(impact(graph, changed_files(args.base))))
+    elif args.stats:
         print(json.dumps(kg.stats(), indent=2))
     elif args.context:
         print(

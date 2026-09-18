@@ -22,6 +22,15 @@ every request.
 - **Ambiguous Signals**: One value must not mean two things.
 - **Recovery Paths**: Ask what happens when the FALLBACK fails.
 
+## Design start — before you write code
+
+- Before editing any gated file, write the design: `agentsmith design new <slug> --scope <glob>` fills in the skeleton the process gate checks.
+- Answer EVERY pillar in `## Pillars` — `applies — how`, `n/a — why`, or `gap — <backlog id>`. A design that skips one is rejected.
+- If any rule here cannot be followed for this change, STOP and ask the owner for permission to deviate. Record it in `## Deviations` with the approval id the owner produces by running `agentsmith approve` at a terminal. You cannot approve it yourself, and no code in that design's scope may be committed until it is approved.
+- List every package the change adds, direct and transitive, in `## Dependencies`.
+- After building: review passes against the levers doc until a pass finds 0, then a complete `## Sign-off` block. Both are checked by the gate.
+
+
 ## ts-react specifics
 - No implicit `any` type
 - Server Components are the default; add `'use client'` explicitly when needed

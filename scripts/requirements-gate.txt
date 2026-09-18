@@ -1,0 +1,12 @@
+# scripts/requirements-gate.txt — what the process gate itself needs.
+#
+# The gate follows the pillars it enforces: Pydantic V2 models (pillar 7) and a
+# span per decision (pillar 3). Locally that comes from the framework
+# environment install-ai-stack.sh builds; in CI, where there is no such
+# environment, this is the list to install. It travels with scripts/, so a
+# vendored tenant installs exactly what its own copy of the gate imports.
+#
+# Ranges match requirements.txt / runtime/requirements-runtime.txt.
+pydantic>=2.0,<3.0
+opentelemetry-sdk>=1.20,<2.0
+opentelemetry-exporter-otlp-proto-http>=1.20,<2.0

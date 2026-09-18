@@ -49,7 +49,7 @@ def _tenant_root() -> Path:
     control registry and templates still come from the install. Resolving both
     from `_install_root()` meant every tenant's `--strict` gate silently graded
     the FRAMEWORK's pack: the authored risk register, agency manifest and tool
-    allowlist that `ai-tenant-init` seeds (G5) were never read by anything, and
+    allowlist that `agentsmith tenant init` seeds (G5) were never read by anything, and
     a tenant's green SEC-RISK-001 was evidence about a different repo. Same
     walk-up-to-.git semantics as `_shared._repo_root()`.
 

@@ -4,7 +4,7 @@ runtime/trace_redactor.py — Environment-aware OTLP span scrubbing.
 Acts as an OpenTelemetry SpanProcessor. Intercepts spans before export
 and applies the active redaction profile based on $ENVIRONMENT.
 
-Redaction profiles (see SPECS.md §27):
+Redaction profiles (see docs/DESIGN.md › Trace Redaction):
   development  — full capture (up to 1,000 chars)
   staging      — PII/secret patterns stripped; structure preserved; hashed identifiers
   production   — minimal: hashed/truncated to 50 chars; full payload in encrypted HITL blob only
@@ -231,7 +231,7 @@ class HITLBlobStore:
         those tenants the per-tenant key was UNREACHABLE and every one of them
         silently shared the fleet-wide HITL_ENCRYPTION_KEY — in the one store
         that holds unredacted payloads on purpose, while the class docstring
-        and OPERATIONS.md both promise a per-tenant key.
+        and docs/UserManual.md both promise a per-tenant key.
         """
         return re.sub(r"[^A-Za-z0-9]", "_", tenant_id).upper()
 
@@ -280,7 +280,7 @@ class HITLBlobStore:
         encryption key) — silently swallowing that case used to leave a span
         with an `hitl_blob_ref` pointing at a blob that was never written,
         defeating the "full payload preserved for compliance review"
-        guarantee with zero error or alert (Product_Archive.md 2.3).
+        guarantee with zero error or alert (docs/PRODUCT_ARCHIVE.md 2.3).
         Storage I/O errors (disk full, S3 unreachable) are logged at ERROR
         and swallowed — a transient storage outage still shouldn't break
         trace export, but it must not be invisible either.
@@ -407,7 +407,7 @@ def _make_blob_ref(trace_id: str, span_id: str, attr_key: str) -> str:
     # HITL-flagged sibling spans (e.g. Architect/Developer/Validator) would
     # otherwise all compute the same ref `{trace_id}.{attr_key}` and the last
     # write wins, permanently overwriting the earlier spans' encrypted
-    # payloads before anyone reviews them (Product_Archive.md 2.2).
+    # payloads before anyone reviews them (docs/PRODUCT_ARCHIVE.md 2.2).
     return f"{trace_id}.{span_id}.{attr_key}"
 
 
@@ -509,7 +509,7 @@ class TraceRedactor(_OTelSpanProcessor):
         # time) was the actual cross-tenant leak: on a shared worker pool
         # processing spans for multiple tenants in one process, every
         # HITL-flagged span got encrypted with whichever tenant's key the
-        # processor happened to be constructed with (Product_Archive.md 1.2).
+        # processor happened to be constructed with (docs/PRODUCT_ARCHIVE.md 1.2).
         # Resolved the way every other module resolves it. This line read
         # os.environ["TENANT_ID"] directly and was the last place in the repo
         # doing that (tool_registry.py's comment counted five others before it).

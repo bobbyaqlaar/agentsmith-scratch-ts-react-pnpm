@@ -1,6 +1,6 @@
 # Written by AgentSmith when it vendored scripts/ — see hooks/post-checkout.
 # Excludes the vendored files from this repo's ruff check/format; your own
-# files here keep your rules. ai-stack-upgrade regenerates this file.
+# files here keep your rules. `agentsmith upgrade` regenerates this file.
 extend-exclude = [
   "_shared.py",
   "agent_logger.py",
@@ -10,6 +10,14 @@ extend-exclude = [
   "delivery_evidence.py",
   "delivery_model.py",
   "eval_judge.py",
+  "gate_history.py",
+  "gate_ides.py",
+  "gate_kg.py",
+  "gate_models.py",
+  "gate_pillars.py",
+  "gate_shell.py",
+  "gate_steps.py",
+  "gate_tracing.py",
   "generate-ide-config.py",
   "local_agent_stack.py",
   "local_knowledge_graph.py",
@@ -20,6 +28,7 @@ extend-exclude = [
   "notifier.py",
   "process_gate.py",
   "promote-learning.py",
+  "requirements-gate.txt",
   "run-evals.py",
   "run-security-checks.py",
   "security/__init__.py",

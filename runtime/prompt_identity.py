@@ -7,7 +7,7 @@ latency and the verdict, and nothing at all about what was actually sent — so
 "it got worse last Tuesday" has no column to join against.
 
 The obvious fix is prompt versioning, which needs a template engine this
-framework does not have: `FIXES_AND_CLEANUP.md` records that prompts are inline
+framework does not have: `docs/PRODUCT_BACKLOG.md` records that prompts are inline
 f-strings, four of them across KYC Sentinel's agents, and a template engine is
 a real piece of work sitting behind its own trigger condition.
 

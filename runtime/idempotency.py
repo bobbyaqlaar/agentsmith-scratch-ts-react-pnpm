@@ -24,7 +24,7 @@ Usage:
     # ... do the work ...
     store.set("sha256:abc123", result, ttl_seconds=86400)
 
-See SPECS.md §25 for the full specification.
+See docs/DESIGN.md › Production Runtime for the full specification.
 """
 
 from __future__ import annotations
@@ -250,7 +250,7 @@ class _PostgresBackend:
         `scripts/verify_system.py --check-idempotency` as a caller. That check
         does not call this, and neither did anything else — the method had no
         caller at all. It is reachable as `agentsmith purge-idempotency` now,
-        and listed as a Day-2 task in OPERATIONS.md §9, because a cleanup job
+        and listed as a Day-2 task in docs/UserManual.md › Maintain (Day-2 Operations), because a cleanup job
         nobody is told to run is not a cleanup job.
         """
         conn = self._connect()

@@ -1,6 +1,6 @@
 """
 sync-portal-history.py — Pushes .agent-history.log entries to the Ops
-Portal's history sync endpoint (Product_Archive.md P1b).
+Portal's history sync endpoint (docs/PRODUCT_ARCHIVE.md P1b).
 
 Workflow:
   1. Read .agent-history.log (JSONL), skip entries already synced
@@ -14,12 +14,12 @@ Workflow:
 
 Called by:
   - cd-staging.yml / cd-production.yml (post-deploy step, optional)
-  - ai-stack-check, when OPS_PORTAL_URL is configured
+  - agentsmith check, when OPS_PORTAL_URL is configured
 
 Requires:
   OPS_PORTAL_URL         — Ops Portal base URL. Unset = skip silently (exit 0).
   OPS_PORTAL_SYNC_TOKEN  — Bearer token for the sync endpoint. Unset = skip silently.
-  .agenticframework/tenant.yaml — tenant id (same `id:` field ai-tenant-promote reads)
+  .agenticframework/tenant.yaml — tenant id (same `id:` field agentsmith tenant promote reads)
 """
 
 from __future__ import annotations
@@ -61,10 +61,10 @@ def _load_tenant_yaml() -> dict:
 
 
 def _budget_cap_usd(tenant_yaml_data: dict) -> Optional[float]:
-    """Reads gateway.budget_cap_usd from tenant.yaml (Product_Archive.md
+    """Reads gateway.budget_cap_usd from tenant.yaml (docs/PRODUCT_ARCHIVE.md
     P2b) — an optional, user-added section (same optionality as the
     already-documented gateway.routing_overrides), not something
-    ai-tenant-init writes by default. Returns None if the gateway section
+    agentsmith tenant init writes by default. Returns None if the gateway section
     or the key is missing — never raises, since this is a nice-to-have
     display value, not something that should break the sync."""
     try:
@@ -231,5 +231,5 @@ def sync() -> dict:
 if __name__ == "__main__":
     result = sync()
     # Never fail the calling CD job over this — optional infra, same
-    # philosophy as _ai_audit_log_event in install-ai-stack.sh.
+    # philosophy as audit_log_event in runtime/machine/policy.py.
     sys.exit(0)

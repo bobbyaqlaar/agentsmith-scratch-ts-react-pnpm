@@ -11,7 +11,7 @@ Validates:
   7. Unresolved MAJOR/CRITICAL log entries in current project
 
 Used by:
-  - ai-stack-check shell function
+  - `agentsmith check`
   - GitHub Actions CI (optional smoke-test step)
 
 Exit codes:
@@ -65,7 +65,7 @@ def _required_ollama_models() -> list[str]:
     """
     from _shared import provider_models
 
-    # Same helper install-ai-stack.sh's ai-stack-required-models shells out to,
+    # Same helper `agentsmith models --ollama` uses (runtime/machine/ops.py),
     # so the health check and this check can never disagree about what to pull.
     return provider_models("ollama") or ["qwen2.5", "llama3.2:3b", "falcon3:3b", "smollm2"]
 
@@ -151,7 +151,7 @@ def run_checks() -> bool:
     if not _check(
         f"Phoenix @ {phoenix_endpoint}",
         phoenix_ok,
-        "Run: ai-dashboard-start",
+        "Run: agentsmith dashboard start",
         warn_only=True,
     ):
         pass  # warn-only: offline phoenix is allowed
@@ -247,7 +247,7 @@ def run_checks() -> bool:
             _check(
                 f"{len(unresolved)} unresolved MAJOR/CRITICAL issue(s)",
                 False,
-                "Run 'ai-stack-promote' or resolve in Phoenix UI",
+                "Run 'agentsmith promote' or resolve in Phoenix UI",
             )
             for entry in unresolved[:5]:
                 print(
@@ -335,8 +335,10 @@ def check_redaction() -> bool:
 
     redactor = TraceRedactor()
     fixtures = [
+        # not-a-secret: the string this test proves gets scrubbed
         "Authorization: Bearer sk-ant-abcdefghijklmnopqrstuvwxyz0123456789",
         "contact support at someone@example.com about order 4111-1111-1111-1111",
+        # not-a-secret: the string this test proves gets scrubbed
         "raw key sk-abcdefghijklmnopqrstuvwxyz0123456789",
     ]
 
@@ -556,7 +558,7 @@ def check_dlq() -> bool:
 def check_hooks() -> bool:
     """
     CI validation for the developer opt-in + enterprise RFC gate
-    (Product_Archive.md P1a) — simulates both scenarios in throwaway git
+    (docs/PRODUCT_ARCHIVE.md P1a) — simulates both scenarios in throwaway git
     repos so a regression in hooks/pre-commit / hooks/commit-msg fails CI
     instead of only being caught by hand.
     """
@@ -673,7 +675,7 @@ def check_hooks() -> bool:
 def check_history_sync() -> bool:
     """
     CI/manual validation for scripts/sync-portal-history.py against a real
-    running Ops Portal (Product_Archive.md P1b) — requires OPS_PORTAL_URL
+    running Ops Portal (docs/PRODUCT_ARCHIVE.md P1b) — requires OPS_PORTAL_URL
     and OPS_PORTAL_SYNC_TOKEN pointing at one, run from a throwaway tenant
     repo (with .agenticframework/tenant.yaml and a fixture .agent-history.log).
 
@@ -847,9 +849,97 @@ def _git_tracked_files() -> Optional[set[str]]:
     return set(proc.stdout.split())
 
 
+def check_governed() -> bool:
+    """Is this repo actually governed? Every gap at once, never just the first.
+
+    A check that stops at the first missing piece turns provisioning into a
+    guessing game: fix one thing, run again, find the next. This lists them
+    (.agent-rfc/designs/governance-enforcement.md, G7).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import gate_history  # type: ignore
+
+    root = _repo_root()
+    print("═══════════════════════════════════════════════════")
+    print("  Governed repository check")
+    print("═══════════════════════════════════════════════════\n")
+    gaps: list[str] = []
+
+    def want(rel: str, why: str) -> None:
+        if not (root / rel).exists():
+            gaps.append(f"{rel} is missing — {why}")
+
+    want(".agenticframework/process-gates.json", "the gates cover nothing until a repo declares what they cover")
+    for hook in ("process-gate", "commit-msg", "pre-commit", "pre-push"):
+        want(f".githooks/{hook}", "the commit gate and the sweep run from here")
+    want(".claude/settings.json", "the edit gate is an IDE hook")
+    want(".cursor/hooks.json", "the edit gate is an IDE hook")
+    want(".agent-rfc/fixtures/knowledge_graph.json", "a review's scope is computed from the graph")
+    want("docs/REVIEW_LOG.md", "one review log per repo (`artifacts`)")
+    want("docs/DESIGN.md", "one design artifact per repo (`artifacts`)")
+
+    armed = subprocess.run(["git", "config", "--get", "core.hooksPath"], cwd=root,
+                           capture_output=True, text=True, check=False).stdout.strip()
+    if armed != ".githooks":
+        gaps.append("git config core.hooksPath is "
+                    + (f"{armed!r}" if armed else "unset")
+                    + " — the hooks are present but nothing runs them")
+
+    config_path = root / ".agenticframework" / "process-gates.json"
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            gaps.append(f"process-gates.json is not valid JSON ({exc})")
+            config = {}
+        if not config.get("gated"):
+            gaps.append("process-gates.json gates no paths")
+        if not config.get("registry"):
+            gaps.append("process-gates.json declares no `registry` — the design-time rules are not adopted")
+
+    # Kept apart from the list above on purpose: "this control is not
+    # installed" and "this control is installed but has not been run for this
+    # commit" are different facts, and a freshly scaffolded repo is the second
+    # one. Reporting them as one number tells a new tenant its provisioning
+    # failed, which is the wrong thing to go and fix (`ambiguous-signals`).
+    unproven: list[str] = []
+    run = gate_history.last_gates_run(root)
+    if run is None:
+        unproven.append("`agentsmith gates run` has never run in this clone — run it before pushing")
+    elif run.get("only"):
+        unproven.append(f"the last `agentsmith gates run` was filtered to {run['only']!r} — "
+                        f"{run.get('passed')} gate(s) is not the list; run it without --only")
+    elif run.get("commit") != gate_history.head(root):
+        unproven.append(f"the last `agentsmith gates run` was for a different commit "
+                        f"({str(run.get('commit'))[:12]}) — run it again for this one")
+    else:
+        print(f"  ℹ️   last `agentsmith gates run`: {run.get('passed')} passed, {run.get('failed')} failed, "
+              f"{run.get('skipped')} skipped")
+        if run.get("failed"):
+            unproven.append(f"the last `agentsmith gates run` had {run['failed']} failing gate(s)")
+
+    for gap in gaps:
+        print(f"  ❌  {gap}")
+    if not gaps:
+        print("  ✅  every control this repo declares is present and armed")
+    for gap in unproven:
+        print(f"  ⏳  {gap}")
+    print()
+    print("═══════════════════════════════════════════════════")
+    if gaps:
+        print(f"  🛑  {len(gaps)} gap(s) in provisioning"
+              + (f", and {len(unproven)} not yet proven" if unproven else ""))
+    elif unproven:
+        print("  ⏳  Provisioned, not yet proven — the controls are in place and armed")
+    else:
+        print("  🎉  Governed")
+    print("═══════════════════════════════════════════════════")
+    return not gaps and not unproven
+
+
 def check_kg() -> bool:
     """
-    CI validation for the Knowledge Graph (Product_Archive.md P10a, Pillar 2).
+    CI validation for the Knowledge Graph (docs/PRODUCT_ARCHIVE.md P10a, Pillar 2).
     Runs map_codebase.py against the framework's own codebase and asserts the
     resulting graph is non-empty with at least the known scripts/ file nodes.
 
@@ -944,7 +1034,7 @@ def check_kg() -> bool:
 
 def check_onprem_deploy() -> bool:
     """
-    Syntax/shape validation for templates/onprem-deploy/ (OPERATIONS.md
+    Syntax/shape validation for templates/onprem-deploy/ (docs/UserManual.md
     D.6) — no live cluster or Docker daemon required beyond `docker
     compose config` and `helm template`'s own dry-run rendering. Renders
     both proxy engines' configs with canary+shadow+with-db all enabled
@@ -1121,7 +1211,7 @@ def check_onprem_deploy() -> bool:
 
 def check_delivery_model() -> bool:
     """
-    Soft gate for Enterprise Delivery Model (Product_Archive.md).
+    Soft gate for Enterprise Delivery Model (docs/PRODUCT_ARCHIVE.md).
 
     If `.agenticframework/org-policy.yaml` defines `delivery_model`, warn when
     tenant `delivery.platform` / `data_access_pattern` are missing or not in
@@ -1222,6 +1312,8 @@ if __name__ == "__main__":
         sys.exit(0 if check_onprem_deploy() else 1)
     if "--check-kg" in sys.argv:
         sys.exit(0 if check_kg() else 1)
+    if "--governed" in sys.argv:
+        sys.exit(0 if check_governed() else 1)
     if "--check-delivery-model" in sys.argv:
         sys.exit(0 if check_delivery_model() else 1)
     ok = run_checks()

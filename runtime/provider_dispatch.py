@@ -4,7 +4,7 @@ parsing for runtime/llm_gateway.py and scripts/cost_router.py.
 
 Before this module existed, llm_gateway.py and cost_router.py each
 independently built provider request bodies/headers and parsed responses,
-with no shared code (Product_Archive.md 4.3). Only the provider-dispatch
+with no shared code (docs/PRODUCT_ARCHIVE.md 4.3). Only the provider-dispatch
 shape is shared here; each caller's own routing/budget/degrade-ladder logic
 stays in its own file.
 

@@ -1,6 +1,6 @@
 # Written by AgentSmith when it vendored runtime/ — see hooks/post-checkout.
 # Excludes the vendored files from this repo's ruff check/format; your own
-# files here keep your rules. ai-stack-upgrade regenerates this file.
+# files here keep your rules. `agentsmith upgrade` regenerates this file.
 extend-exclude = [
   "__init__.py",
   "cli.py",
@@ -21,6 +21,12 @@ extend-exclude = [
   "k8s/dedicated-tenant/secret.yaml.example",
   "llm_gateway.py",
   "luhn.py",
+  "machine/__init__.py",
+  "machine/governance.py",
+  "machine/ops.py",
+  "machine/policy.py",
+  "machine/state.py",
+  "machine/upgrade.py",
   "metrics.py",
   "models.yaml",
   "moderation.py",

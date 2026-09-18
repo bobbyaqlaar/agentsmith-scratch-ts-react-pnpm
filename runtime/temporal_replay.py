@@ -5,7 +5,7 @@ runtime/dead_letter.py's DeadLetterQueue.
 Without this, `DeadLetterQueue.replay()` only flips a DB status flag —
 "replayed" in name only, since the original workflow execution that
 produced the entry has already terminated and there's nothing left to
-resume (see Product_Archive.md's HITL/DLQ redesign). This module closes
+resume (see docs/PRODUCT_ARCHIVE.md's HITL/DLQ redesign). This module closes
 that gap for Temporal specifically: it signals the *live, still-parked*
 workflow identified by `DLQEntry.workflow_id` — which only exists because
 `runtime/workflows/base_workflow.py`'s `run_with_recoverable_step` keeps

@@ -1,7 +1,7 @@
 """
 runtime/workflows/base_workflow.py — Reference Temporal workflow base class.
 
-Demonstrates the durable-execution pattern described in SPECS.md §25:
+Demonstrates the durable-execution pattern described in docs/DESIGN.md › Production Runtime:
   - Activities call runtime/llm_gateway.py (never cost_router.py)
   - HITL pause/resume via workflow signal, with a timeout that routes to the DLQ
   - A generalized recoverable-step pattern (run_with_recoverable_step) where
@@ -349,7 +349,7 @@ class BaseAgentWorkflow:
         if not _HAS_TEMPORAL:
             raise RuntimeError(
                 "temporalio is not installed. Run: pip install temporalio. "
-                "See SPECS.md §25 for the production runtime spec."
+                "See docs/DESIGN.md › Production Runtime for the production runtime spec."
             )
 
         if gate_result is None:
@@ -433,7 +433,7 @@ class BaseAgentWorkflow:
         if not _HAS_TEMPORAL:
             raise RuntimeError(
                 "temporalio is not installed. Run: pip install temporalio. "
-                "See SPECS.md §25 for the production runtime spec."
+                "See docs/DESIGN.md › Production Runtime for the production runtime spec."
             )
 
         current_payload = payload
@@ -531,7 +531,7 @@ class BaseAgentWorkflow:
         if not _HAS_TEMPORAL:
             raise RuntimeError(
                 "temporalio is not installed. Run: pip install temporalio. "
-                "See SPECS.md §25 for the production runtime spec."
+                "See docs/DESIGN.md › Production Runtime for the production runtime spec."
             )
 
         info = workflow.info()

@@ -409,7 +409,7 @@ def _get_checkpointer() -> Any:
     """
     Select a LangGraph checkpointer based on $ENVIRONMENT (resolved via the
     canonical, fail-closed runtime/environment.py:get_environment() — see
-    Product_Archive.md 2.8). NOTE: "unset" now resolves to "production",
+    docs/PRODUCT_ARCHIVE.md 2.8). NOTE: "unset" now resolves to "production",
     not "development" — local/IDE runs must set ENVIRONMENT=development
     explicitly to get MemorySaver; an unset var no longer defaults to it.
 
@@ -424,7 +424,7 @@ def _get_checkpointer() -> Any:
     # treated identically by both — previously this defaulted missing/
     # unrecognized values to "development" independently of trace_redactor's
     # own (different) default, which could silently diverge under the exact
-    # same misconfiguration (Product_Archive.md 2.8).
+    # same misconfiguration (docs/PRODUCT_ARCHIVE.md 2.8).
     environment = get_environment()
     database_url = os.environ.get("DATABASE_URL", "")
 
@@ -433,7 +433,8 @@ def _get_checkpointer() -> Any:
             raise RuntimeError(
                 f"ENVIRONMENT={environment!r} requires a Postgres checkpointer — "
                 "set DATABASE_URL. MemorySaver is prohibited outside development "
-                "(see SPECS.md §25, §28). Note: production agent runs should use "
+                "(see docs/DESIGN.md › Production Runtime, Framework vs Application Release). "
+                "Note: production agent runs should use "
                 "runtime/worker.py + Temporal, not this LangGraph dev/hybrid path."
             )
         try:

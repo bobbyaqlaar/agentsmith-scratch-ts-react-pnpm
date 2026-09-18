@@ -3,7 +3,7 @@ name: "Eval scorecard (reusable)"
 # Shared by ci-go.yml, ci-python-fastapi.yml, ci-ts-react.yml — previously
 # each copy-pasted an identical ~20-line block that had already started to
 # drift (ci-ts-react.yml grew a comment the others lack) — see
-# Product_Archive.md 4.1. A change to the eval step (new dependency,
+# docs/PRODUCT_ARCHIVE.md 4.1. A change to the eval step (new dependency,
 # different fail-below threshold default, etc.) now only needs to land here.
 
 on:

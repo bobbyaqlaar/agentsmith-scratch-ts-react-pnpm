@@ -6,7 +6,8 @@ All LLM calls route through llm_gateway.py — cost_router.py is NOT used here.
 All spans carry tenant.id, workflow.id, workflow.run_id.
 
 This module intentionally has no domain-specific workflows/activities of its
-own — per SPECS.md §25/§28, "framework workflows are never deployed directly
+own — per docs/DESIGN.md › Production Runtime, Framework vs Application Release,
+"framework workflows are never deployed directly
 as tenant production code." Tenant repos copy this file's shape and bind
 their own workflows/activities, the same way
 examples/oil-price-agent/worker.py does (a complete, working reference).
@@ -21,7 +22,7 @@ importable module rather than a full copy of this file. Without
 TENANT_WORKER_MODULE set, the behavior is unchanged: this module cannot run
 anything by itself and says so loudly rather than pretending to.
 
-See SPECS.md §25 for the full production runtime specification.
+See docs/DESIGN.md › Production Runtime for the full production runtime specification.
 """
 
 from __future__ import annotations
@@ -157,7 +158,7 @@ def _start_temporal_worker(tenant_id: str) -> None:
             "No workflows/activities registered. Either copy this file's shape into your "
             "tenant repo (see examples/oil-price-agent/worker.py for a complete example) "
             "or set TENANT_WORKER_MODULE=your_module (exposing start_temporal_worker(tenant_id)). "
-            "See SPECS.md §25 and runtime/workflows/."
+            "See docs/DESIGN.md › Production Runtime and runtime/workflows/."
         )
     if not hasattr(module, "start_temporal_worker"):
         raise AttributeError(
@@ -183,7 +184,7 @@ def _start_celery_worker(tenant_id: str) -> None:
         raise NotImplementedError(
             "No tasks registered. Either copy this file's shape into your tenant repo "
             "or set TENANT_WORKER_MODULE=your_module (exposing start_celery_worker(tenant_id)). "
-            "See SPECS.md §25."
+            "See docs/DESIGN.md › Production Runtime."
         )
     if not hasattr(module, "start_celery_worker"):
         raise AttributeError(

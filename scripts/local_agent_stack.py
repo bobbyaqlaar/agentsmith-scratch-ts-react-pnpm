@@ -41,8 +41,8 @@ def _setup_otel(project_name: str, session_id: str) -> Any:
 
         # runtime/otlp.py owns the endpoint, for all four callers that used to
         # own it separately. This one's fallback chain ended at
-        # OTEL_EXPORTER_OTLP_ENDPOINT — the variable OPERATIONS.md,
-        # docker-compose.yml and `ai-dashboard-start` all set to a full
+        # OTEL_EXPORTER_OTLP_ENDPOINT — the variable docs/UserManual.md,
+        # docker-compose.yml and the old `ai-dashboard-start` all set to a full
         # `…/v1/traces` URL — and then appended `/v1/traces` to whatever it
         # found. portal/lib/tracing.ts had documented that exact trap and
         # guarded against it; this sibling, reading the same variable in the

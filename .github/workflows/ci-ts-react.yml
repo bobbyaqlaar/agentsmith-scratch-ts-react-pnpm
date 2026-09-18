@@ -88,6 +88,7 @@ jobs:
       # standard scaffold defines — a stock `create-vite` react-ts project
       # failed here with `Missing script: "tsc"` before any real check ran.
       - name: Type check
+        # agentsmith:gate
         run: |
           if node -e 'process.exit(require("./package.json").scripts?.typecheck ? 0 : 1)'; then
             "$PM" run typecheck
@@ -100,34 +101,21 @@ jobs:
       # --if-present BEFORE the script name: pnpm passes anything after it to
       # the script itself. npm accepts it in either place.
       - name: Lint
+        # agentsmith:gate
         run: '"$PM" run --if-present lint'
 
       - name: "Validate Knowledge Graph (Pillar 2)"
-        run: |
-          python3 scripts/map_codebase.py --quiet
-          python3 - <<'EOF'
-          import json, sys
-          from pathlib import Path
-
-          committed = Path(".agent-rfc/fixtures/knowledge_graph.json")
-          if not committed.exists():
-              print("⚠️  No committed knowledge_graph.json — skipping staleness check.")
-              sys.exit(0)
-
-          with committed.open() as f:
-              data = json.load(f)
-
-          node_count = len(data.get("nodes", []))
-          edge_count = len(data.get("edges", data.get("links", [])))
-          print(f"✅ Knowledge Graph: {node_count} nodes, {edge_count} edges")
-
-          if node_count == 0:
-              print("⚠️  Knowledge Graph is empty — map_codebase.py may have failed.")
-              sys.exit(1)
-          EOF
-        continue-on-error: true # warn, not block, until adoption is stable
+        # agentsmith:gate
+        # The same check AgentSmith runs on itself. The inline version here
+        # rebuilt the graph and then counted nodes in the committed file — it
+        # never compared them, so a graph stale by months passed every time.
+        # verify_system.py captures the committed shape BEFORE regenerating.
+        # A repo with no graph at all still passes with a warning until
+        # `agentsmith tenant init` provisions one (G7).
+        run: python3 scripts/verify_system.py --check-kg
 
       - name: "RFC gate (Pillar 1)"
+        # agentsmith:gate
         run: |
           if [ ! -f ".agenticframework/org-policy.yaml" ]; then
             echo "ℹ️  Developer mode — RFC gate skipped."
@@ -141,8 +129,11 @@ jobs:
           echo "✅ RFC gate: ${RFC_COUNT} RFC(s) found."
 
       - name: "IDE config drift check (Pillar 6/7)"
+        # agentsmith:gate
+        # Blocking since G3: the rule files are generated from one source, so
+        # drift means a repo is telling its agents something the framework did
+        # not say. Regenerate with `python3 scripts/generate-ide-config.py --write`.
         run: python3 scripts/generate-ide-config.py --check-only
-        continue-on-error: true # warn only — blocking is a Phase 5 decision
 
       - name: "Framework health check (Pillar 3/5)"
         env:
@@ -155,6 +146,7 @@ jobs:
       # were Jest-only flags — Vitest, the default runner for a Vite project,
       # exits with `Unknown option --watchAll`.
       - name: Unit tests
+        # agentsmith:gate
         env:
           CI: "true"
         run: '"$PM" test'

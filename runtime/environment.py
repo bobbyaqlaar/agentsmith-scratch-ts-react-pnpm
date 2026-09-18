@@ -10,7 +10,7 @@ exported), while multi_agent_system.py's checkpointer selector only hard-
 errors when ENVIRONMENT is explicitly "staging" or "production" with no
 DATABASE_URL set — an unrecognized value (e.g. a typo'd "produciton") fell
 through to the same permissive MemorySaver path with nothing louder than a
-stderr warning (Product_Archive.md 2.8).
+stderr warning (docs/PRODUCT_ARCHIVE.md 2.8).
 
 get_environment() is fail-closed: missing or unrecognized values resolve to
 "production" (the most restrictive profile/path), not "development". Both

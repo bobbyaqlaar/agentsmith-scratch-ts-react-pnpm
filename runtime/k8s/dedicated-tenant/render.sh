@@ -2,7 +2,7 @@
 # runtime/k8s/dedicated-tenant/render.sh — substitutes {{TENANT_ID}} and
 # {{WORKER_IMAGE}} and prints the rendered manifests to stdout (or applies
 # them directly with --apply). Same {{PLACEHOLDER}} sed-substitution
-# convention as workflow-templates/ (see ai-tenant-init in install-ai-stack.sh).
+# convention as workflow-templates/ (see `agentsmith tenant init`, runtime/cli.py).
 #
 # Usage:
 #   ./render.sh <tenant-id> <worker-image> [--apply]
@@ -18,7 +18,7 @@ WORKER_IMAGE="${2:-}"
 # Both values land inside a sed replacement string with no escaping below —
 # a tenant_id or image ref containing '/', '&', or other sed-significant
 # characters would corrupt the substitution (or, for tenant_id, K8s namespace
-# naming requires this pattern anyway) (Product_Archive.md 4.12).
+# naming requires this pattern anyway) (docs/PRODUCT_ARCHIVE.md 4.12).
 if ! [[ "$TENANT_ID" =~ ^[a-z0-9-]+$ ]]; then
   echo "❌ <tenant-id> must match ^[a-z0-9-]+$ (Kubernetes namespace naming rules): got '$TENANT_ID'"
   exit 1

@@ -2,7 +2,7 @@ name: "Deploy placeholder"
 description: >
   Documented no-op deploy step for greenfield tenants. Replaces the inline
   echo block that used to live directly in cd-staging.yml/cd-production.yml
-  (Product_Archive.md P4) — a swappable named step a tenant points at
+  (docs/PRODUCT_ARCHIVE.md P4) — a swappable named step a tenant points at
   their real platform via the deploy_command input, rather than literal
   text to find-and-delete inside the workflow YAML.
 

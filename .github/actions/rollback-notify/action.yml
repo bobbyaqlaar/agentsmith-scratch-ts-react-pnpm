@@ -7,7 +7,7 @@ description: >
   stays tenant-supplied — this action prints the relevant platform command
   if none is configured, matching the existing "print the command, don't
   guess which CLI to run" posture already in cd-production.yml
-  (Product_Archive.md P4).
+  (docs/PRODUCT_ARCHIVE.md P4).
 
 inputs:
   slack_webhook_url:

@@ -200,7 +200,7 @@ _consecutive_failures: dict[str, int] = {}
 # individual models — fine for this file's actual usage (dev-mode, one
 # process per session, a handful of model names), but unbounded if ever used
 # in a long-running process with many distinct/dynamic model ids
-# (Product_Archive.md 4.4). This is a cheap upper bound, not an LRU — if it
+# (docs/PRODUCT_ARCHIVE.md 4.4). This is a cheap upper bound, not an LRU — if it
 # ever fires, dropping the whole dict just means the escalation counters
 # reset to 0, which is the same as every model's first call ever.
 _MAX_TRACKED_MODELS = 256
@@ -584,7 +584,7 @@ def call(
         # runtime/llm_gateway.py via runtime/provider_dispatch.py — this
         # used to independently re-derive "is this Anthropic" from the
         # base_url string and build/parse bodies inline, drifting from
-        # llm_gateway.py's own copy of the same logic (Product_Archive.md 4.3).
+        # llm_gateway.py's own copy of the same logic (docs/PRODUCT_ARCHIVE.md 4.3).
         provider = infer_provider(route_result.base_url)
         path_suffix, headers, body = build_request(
             provider,
@@ -643,7 +643,7 @@ def call(
                 # the same threshold, gating the same merges, and nothing
                 # downstream can tell. Failing loudly is the safer default; the
                 # scorecard skips with a cause instead of scoring with a
-                # stand-in. (See OPERATIONS.md "When a gate blocks, and when it
+                # stand-in. (See docs/UserManual.md "When a gate blocks, and when it
                 # steps aside".)
                 if _exhausted(err):
                     raise RuntimeError(

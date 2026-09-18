@@ -5,7 +5,7 @@ This package contains reference workflow patterns only.
 Tenant repos define their OWN production workflow files.
 Do NOT deploy examples from this directory as tenant production code.
 
-See SPECS.md §25 and examples/oil-price-agent/workflows/ for a complete
+See docs/DESIGN.md › Production Runtime and examples/oil-price-agent/workflows/ for a complete
 domain reference built on top of this pattern.
 
 Reference workflows:

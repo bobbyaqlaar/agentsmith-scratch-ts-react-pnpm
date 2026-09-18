@@ -17,11 +17,12 @@
 #
 # SELECTING A PROFILE
 #   AGENT_MODEL_PROFILE=<name>   explicit, wins over everything
-#   AI_STACK_MODE=<name>         what `ai-mode-local` / `ai-mode-hybrid` export
+#   AI_STACK_MODE=<name>         the environment (a one-off run, CI)
+#   ~/.agent-framework/state/mode  what `agentsmith mode local|hybrid` records
 #   default_profile below        fallback
-# `ai-mode-hybrid` previously announced "Claude + cost routing" while changing
+# The hybrid mode switch once announced "Claude + cost routing" while changing
 # nothing about model selection — nothing in the registry path read the mode.
-# It now selects the `hybrid` profile.
+# It selects the `hybrid` profile.
 #
 # api_format vs provider — WHO hosts a model and WHAT SHAPE it speaks are
 # independent. `provider` picks the host, credential and (for cloud-native

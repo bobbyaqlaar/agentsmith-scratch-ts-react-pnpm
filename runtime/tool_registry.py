@@ -245,7 +245,7 @@ def default_registry() -> ToolRegistry:
     resolves `security.tool_allowlist_strict` from tenant.yaml and
     `TOOL_ALLOWLIST_STRICT` from the environment. So a tenant declaring
     deny-by-default got it on every registry EXCEPT the default one — and the
-    bare `@tool(name=...)` form is what SPECS.md §26 and OPERATIONS.md name as
+    bare `@tool(name=...)` form is what docs/DESIGN.md › Federated Observability and docs/UserManual.md name as
     the API. A declared control that the documented path does not apply is the
     shape of review-levers: declared-vs-enforced.
 

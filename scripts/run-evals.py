@@ -371,7 +371,7 @@ def _warn_generic_pipeline_fallback(case_id: str) -> None:
         f"      Fix: pin `actual_output` on each case (a regression test "
         f"against known-good output), or\n"
         f"      have your app write its real responses into the fixture. See "
-        f"OPERATIONS.md §3.\n"
+        f"docs/UserManual.md › Test.\n"
     )
 
 
@@ -1533,10 +1533,10 @@ if __name__ == "__main__":
     )
     # 2 means "skipped: too few cases to gate" — a state every tenant starts
     # in. As a process exit code it failed the CI step, so a fresh
-    # `ai-tenant-init` repo went red on its first push for having no golden
+    # `agentsmith tenant init` repo went red on its first push for having no golden
     # dataset yet, and eval-scorecard.yml's own comment ("exit 2 = skip
     # gracefully (not a failure)") described behaviour the code never had.
-    # FIXES_AND_CLEANUP.md records the rule — "graceful skip = exit 0" — but
+    # docs/PRODUCT_BACKLOG.md records the rule — "graceful skip = exit 0" — but
     # only cost_router's call site was ever fixed. run_scorecard still returns
     # 2 so programmatic callers can tell skipped from passed; the CLI boundary
     # is where it has to become 0.

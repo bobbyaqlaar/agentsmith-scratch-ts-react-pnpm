@@ -3,7 +3,7 @@ promote-learning.py — HITL trace promoter: production incident → golden data
 
 Two paths to promotion:
   1. CLI:          python3 scripts/promote-learning.py <case-id> '<input>' '<correct-output>'
-  2. Shell alias:  ai-stack-promote <case-id> '<input>' '<correct-output>'
+  2. Command:      agentsmith promote <case-id> '<input>' '<correct-output>'
 
 After promotion:
   - Appends the new case to golden_evals.json.

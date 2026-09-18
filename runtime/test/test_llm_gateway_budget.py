@@ -1,6 +1,6 @@
 """
 runtime/test/test_llm_gateway_budget.py — regression test for the budget
-reservation race (Product_Archive.md 2.1).
+reservation race (docs/PRODUCT_ARCHIVE.md 2.1).
 
 Uses the in-memory backend (no external infra) for the concurrency
 assertion — deterministic and fast enough to run on every PR. A separate

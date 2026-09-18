@@ -13,7 +13,7 @@ THIS tenant-run receiver instead, which DOES have a Temporal client
 
 This also keeps HITL routing tenant-specific by construction: each tenant
 configures their OWN replay_webhook_url (synced from
-.agenticframework/tenant.yaml, see OPERATIONS.md), so a human-in-the-loop
+.agenticframework/tenant.yaml, see docs/UserManual.md), so a human-in-the-loop
 fix for tenant A's DLQ entry is delivered to tenant A's own
 receiver/team — never a shared, cross-tenant endpoint.
 
@@ -30,7 +30,7 @@ Required env vars:
   REPLAY_WEBHOOK_SECRET      — shared secret; must match what's configured
                                in the portal for this tenant (sent back via
                                .agenticframework/tenant.yaml -> sync, see
-                               OPERATIONS.md "Wire your platform")
+                               docs/UserManual.md "Wire your platform")
   TEMPORAL_ADDRESS           — e.g. "localhost:7233" (default if unset)
 
 Run: python3 replay_webhook_server.py [port, default 8090]

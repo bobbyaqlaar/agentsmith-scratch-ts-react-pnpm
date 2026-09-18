@@ -42,7 +42,7 @@ description: >
     gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
       --member="serviceAccount:github-deployer@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
       --role="roles/iam.serviceAccountUser"
-  See OPERATIONS.md §4 (GCP deployment specifics) for full context and worker-hosting options.
+  See docs/UserManual.md › Deploy via GitHub CI/CD (GCP deployment specifics) for full context and worker-hosting options.
 
 inputs:
   workload_identity_provider:
@@ -96,5 +96,5 @@ runs:
         else
           echo "ℹ️  GCP auth: skipped — neither GCP_WORKLOAD_IDENTITY_PROVIDER nor GCP_SA_KEY configured."
           echo "   Set these secrets on the GitHub Environment to enable GCP deployment."
-          echo "   See OPERATIONS.md §4 (GCP deployment specifics) for setup instructions."
+          echo "   See docs/UserManual.md › Deploy via GitHub CI/CD (GCP deployment specifics) for setup instructions."
         fi

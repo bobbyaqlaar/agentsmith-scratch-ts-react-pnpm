@@ -15,7 +15,7 @@ Operations:
   replay(task_id, override_payload=None)                  — re-submit to workflow engine
   discard(task_id)                                         — mark resolved, remove from active queue
 
-Backend: Postgres only (recommended for auditability — see SPECS.md §25).
+Backend: Postgres only (recommended for auditability — see docs/DESIGN.md › Production Runtime).
 
 Replay is workflow-engine-specific and intentionally pluggable: pass a
 `replay_handler` callable to the constructor to actually re-enqueue to
@@ -33,14 +33,14 @@ without string-matching. `workflow_id`/`gate_id` identify which live
 workflow and which specific gate within it this entry came from — needed
 because a workflow can have multiple recoverable steps (sequential or
 concurrent), so a single global signal isn't enough to route a fix back to
-the right one (Product_Archive.md HITL/DLQ redesign).
+the right one (docs/PRODUCT_ARCHIVE.md HITL/DLQ redesign).
 
 On enqueue, posts to SLACK_WEBHOOK_URL/TEAMS_WEBHOOK_URL if configured —
 same fail-open notify-don't-block philosophy as
 .github/actions/rollback-notify — so a human is pinged the moment
 something needs attention, not only when they happen to check `/dlq`.
 
-See SPECS.md §25 for the full specification.
+See docs/DESIGN.md › Production Runtime for the full specification.
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ _DLQ_DDL = [
     """,
     # CREATE TABLE IF NOT EXISTS above is a no-op against an already-existing
     # table from before this column set — same gotcha as portal/db/schema.sql's
-    # budget_cap_usd (Product_Archive.md P2b) — ALTER is what actually applies
+    # budget_cap_usd (docs/PRODUCT_ARCHIVE.md P2b) — ALTER is what actually applies
     # these columns to a pre-existing dlq_entries.
     "ALTER TABLE dlq_entries ADD COLUMN IF NOT EXISTS reason TEXT",
     "ALTER TABLE dlq_entries ADD COLUMN IF NOT EXISTS workflow_id TEXT",

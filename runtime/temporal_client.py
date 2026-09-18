@@ -9,7 +9,7 @@ Seven call sites connected to Temporal, and they did not agree:
     framework's own shipped worker and KYC Sentinel's ignored it, so a
     deployment against a TLS-terminating Temporal Cloud endpoint connected
     without TLS and the setting appeared to work because nothing complained.
-  * Those three compared it to the literal `"true"`, while OPERATIONS.md
+  * Those three compared it to the literal `"true"`, while docs/UserManual.md
     documents `TEMPORAL_TLS="1"`. Following the documentation therefore
     produced `use_tls=False` — a documented security switch that silently did
     nothing, everywhere it was read.
@@ -31,7 +31,7 @@ from typing import Any, Optional
 # own `_TRUTHY = {"1", "true", "yes", "on"}` and config.py grew an identical set
 # under a different name — two catalogs of the same fact, which is how one of
 # them ends up accepting a spelling the other rejects. The reasoning is worth
-# keeping: "1" is what OPERATIONS.md documents, "true" is what the example
+# keeping: "1" is what docs/UserManual.md documents, "true" is what the example
 # scripts checked for, and a flag that turns a security control ON must not
 # depend on which spelling the reader happened to copy.
 

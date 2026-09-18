@@ -64,8 +64,9 @@ from typing import Any, Optional
 # / verify_system.py each carried their own fallback and drifted apart —
 # reading the registry keeps that fixed while removing the duplicate source.
 #
-# Docs referencing the default: SPECS.md §7/§21, OPERATIONS.md §0,
-# UserManual.md §8.
+# Docs referencing the default: docs/DESIGN.md › Installation Procedure, Resolved Design Decisions,
+# docs/UserManual.md › Install & Start,
+# docs/UserManual.md › Running Evaluations.
 # Kept in step with the `judge` role in runtime/models.yaml so the fallback and
 # the registry never name different graders.
 DEFAULT_JUDGE_MODEL = "falcon3:3b"

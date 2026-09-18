@@ -56,7 +56,7 @@ jobs:
       # Must run before build-push-ghcr when pushing to Artifact Registry, and
       # before the deploy step when using gcloud/kubectl. Sets ADC on the runner
       # so any subsequent step calling google.auth.default() is authenticated.
-      # See OPERATIONS.md §4 (GCP deployment specifics) for one-time setup instructions.
+      # See docs/UserManual.md › Deploy via GitHub CI/CD (GCP deployment specifics) for one-time setup instructions.
       - name: "Authenticate to GCP"
         uses: ./.github/actions/gcp-auth
         with:
@@ -104,7 +104,7 @@ jobs:
 
       # ── Deploy to staging. Set the DEPLOY_COMMAND secret on this tenant's
       # GitHub Environment to wire in your platform — no workflow YAML edit
-      # needed. Unset = no-op placeholder (OPERATIONS.md "Wire your platform").
+      # needed. Unset = no-op placeholder (docs/UserManual.md "Wire your platform").
       - name: "Deploy to staging"
         uses: ./.github/actions/deploy-placeholder
         env:

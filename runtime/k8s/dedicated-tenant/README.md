@@ -1,4 +1,4 @@
-# Dedicated Worker Pool (SPECS.md §23, §30)
+# Dedicated Worker Pool (docs/DESIGN.md › Tenancy Model (Independent Repositories), Enterprise Install and Compliance Pack)
 
 Reference Kubernetes manifests for `tenant.isolation: dedicated` — a tenant
 gets its own namespace, its own worker `Deployment`, and its own
@@ -37,7 +37,7 @@ kubectl create secret generic agenticframework-secrets -n tenant-acme \
   --from-literal=AGENT_OWNER_ID="..."
 ```
 
-`ai-tenant-init <id> --isolation dedicated` (in `install-ai-stack.sh`) sets
+`agentsmith tenant init <id> --isolation dedicated` (`runtime/cli.py`) sets
 `isolation: dedicated` in `.agenticframework/tenant.yaml` and prints this
 `render.sh` command as the next step.
 

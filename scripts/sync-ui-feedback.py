@@ -9,7 +9,7 @@ Workflow:
   4. Record sync state to avoid re-processing on subsequent runs.
 
 Called by:
-  - ai-test-evals shell function (before running scorecard)
+  - `agentsmith evals` (before running the scorecard)
   - GitHub Actions CD workflow (post-deploy sync)
 
 Requires:

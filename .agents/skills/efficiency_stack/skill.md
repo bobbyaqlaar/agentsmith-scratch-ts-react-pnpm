@@ -3,6 +3,11 @@
 Before writing any code or making file changes
 
 ## Instructions
+- Before editing any gated file, write the design: `agentsmith design new <slug> --scope <glob>` fills in the skeleton the process gate checks.
+- Answer EVERY pillar in `## Pillars` — `applies — how`, `n/a — why`, or `gap — <backlog id>`. A design that skips one is rejected.
+- If any rule here cannot be followed for this change, STOP and ask the owner for permission to deviate. Record it in `## Deviations` with the approval id the owner produces by running `agentsmith approve` at a terminal. You cannot approve it yourself, and no code in that design's scope may be committed until it is approved.
+- List every package the change adds, direct and transitive, in `## Dependencies`.
+- After building: review passes against the levers doc until a pass finds 0, then a complete `## Sign-off` block. Both are checked by the gate.
 - (Requirements and Design) An .agent-rfc/ directory must exist. Do not modify source files unless a markdown spec exists in .agent-rfc/. Before any change, produce a step-by-step implementation blueprint.
 - (Build Architecture (Ponytail)) Run a 5-step analysis before creating new files: (1) does this already exist? (2) is there a native library? (3) what is the minimal change? (4) what does this affect? (5) are there downstream graph dependencies? No unapproved third-party dependencies.
 - (Testing Guardrails) Every logical change requires a corresponding unit or integration test. Never clear or skip existing tests to force green coverage.

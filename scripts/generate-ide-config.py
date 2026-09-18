@@ -1,7 +1,7 @@
 """
 generate-ide-config.py — generates .cursorrules, CLAUDE.md, and Antigravity
 skill files from templates/agent-rules.yaml, the single source of truth
-(SPECS.md §4, §13, §22 Phase 5).
+(docs/DESIGN.md › Ten Operational Pillars, Antigravity Integration).
 
 Called by the post-checkout hook instead of embedding IDE-rule content
 inline — editing templates/agent-rules.yaml is now the only way to change
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import os
 import subprocess
 import sys
@@ -35,8 +36,9 @@ def _load_rules(rules_file: Path) -> dict:
         import yaml  # type: ignore
     except ImportError:
         print(
-            "❌ generate-ide-config.py requires pyyaml (pip install -r requirements.txt). "
-            "IDE config was NOT regenerated.",
+            f"❌ generate-ide-config.py requires pyyaml, which {sys.executable} lacks. "
+            "The git hooks run it with ~/.agent-framework/.venv/bin/python — re-run "
+            "install-ai-stack.sh to build that environment. IDE config was NOT regenerated.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -68,6 +70,201 @@ def _playbook_location(doc: str) -> str:
         f"or `~/.agent-framework/docs/{filename}` if AgentSmith was installed "
         f"from the package"
     )
+
+
+PROCESS_GATES_CONFIG = ".agenticframework/process-gates.json"
+
+
+def _repo_extends(repo_root: Path) -> dict:
+    """A repo's own `extends` block. Its notes belong in the generated rule
+    files, not hand-edited into them: a hand edit drifts, and the drift check
+    then reports every regeneration as a conflict."""
+    config = repo_root / PROCESS_GATES_CONFIG
+    if not config.is_file():
+        return {}
+    try:
+        return json.loads(config.read_text(encoding="utf-8")).get("extends") or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _tenant_declaration(repo_root: Path) -> dict:
+    """`tenant:` and `framework:` from .agenticframework/tenant.yaml.
+
+    Without this the defaults were a git-remote name and "unknown@unknown", so
+    CI's drift check generated different files from a developer's run and the
+    check could only pass by committing the placeholder. The repo already
+    declares all three; read them (`single-source-of-truth`). Parsed with a
+    two-level scan rather than pyyaml — this runs where pyyaml may be absent,
+    and the file is written by `agentsmith tenant init`, not by hand.
+    """
+    config = repo_root / ".agenticframework" / "tenant.yaml"
+    if not config.is_file():
+        return {}
+    values: dict = {}
+    section = None
+    for line in config.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("#") or not line.strip():
+            continue
+        if not line.startswith((" ", "\t")):
+            section = line.split(":", 1)[0].strip()
+            continue
+        if section in ("tenant", "framework") and ":" in line:
+            key, _, value = line.strip().partition(":")
+            value = value.strip().strip('"\'')
+            if value:
+                values[f"{section}.{key.strip()}"] = value
+    return values
+
+
+def _repo_notes_block(ctx: dict) -> str:
+    notes = ctx.get("rules_extra") or []
+    if not notes:
+        return ""
+    return "\n".join(["## This repository", "", *[f"- {note}" for note in notes], ""])
+
+
+def _design_start_lines(rules: dict) -> list[str]:
+    """The ask-the-owner block, from agent-rules.yaml `records.design_start`.
+
+    Every renderer surfaces it: a rule that only Claude Code's file carries is a
+    rule Cursor, Antigravity, Copilot, Gemini and Codex never see, and the
+    owner asked for permission-to-deviate in ANY IDE.
+    """
+    records = rules.get("records") or {}
+    return [" ".join(str(line).split()) for line in records.get("design_start", [])]
+
+
+DESIGN_START_HEADING = "## Design start — before you write code"
+
+
+def _design_start_block(rules: dict, heading: str = DESIGN_START_HEADING) -> str:
+    lines = _design_start_lines(rules)
+    if not lines:
+        return ""
+    bullets = [f"- {line}" for line in lines]
+    return "\n".join([heading, "", *bullets, ""])
+
+
+def render_registry(rules: dict) -> str:
+    """templates/governance.json — the rules the process gate enforces, as JSON.
+
+    The hooks run without pyyaml, so they cannot read agent-rules.yaml; a
+    hand-kept JSON beside it would be a second rule set. This compiles the one
+    source instead, and --registry --check-only fails when the two differ.
+    """
+    registry = {
+        "_about": "Generated from templates/agent-rules.yaml by scripts/generate-ide-config.py --registry. "
+        "Do not edit; read by scripts/process_gate.py (.agent-rfc/designs/governance-enforcement.md).",
+        "version": str((rules.get("meta") or {}).get("version", "0")),
+        "pillars": [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "check": list(p.get("check") or []),
+                "design_question": p.get("design_question"),
+                "rule": " ".join(str(p.get("rule", "")).split()),
+            }
+            for p in rules.get("pillars", [])
+        ],
+        "records": rules.get("records") or {},
+        "artifacts": rules.get("artifacts") or {},
+        "ides": rules.get("ides") or [],
+    }
+    return json.dumps(registry, indent=2, ensure_ascii=False) + "\n"
+
+
+def _registry_mode(rules_file: Path, rules: dict, check_only: bool) -> int:
+    target = rules_file.with_name("governance.json")
+    expected = render_registry(rules)
+    if check_only:
+        actual = target.read_text(encoding="utf-8") if target.exists() else None
+        if actual == expected:
+            print(f"✅ {target.name} matches {rules_file.name}")
+            return 0
+        state = 'is missing' if actual is None else 'has drifted'
+        print(f"❌ {target} {state} — run generate-ide-config.py --registry")
+        if actual is not None:
+            sys.stdout.writelines(difflib.unified_diff(
+                actual.splitlines(keepends=True), expected.splitlines(keepends=True),
+                fromfile=f"committed/{target.name}", tofile=f"generated/{target.name}",
+            ))
+        return 1
+    target.write_text(expected, encoding="utf-8")
+    print(f"✅ Written {target} from {rules_file.name}")
+    return 0
+
+
+def _gates_mode(repo_root: Path, check_only: bool) -> int:
+    """The gates table in docs/validation-checklist.md, from the workflow tags.
+
+    Step 3 of that checklist used to carry four commands somebody typed out, in
+    a repo whose CI runs thirty steps — the duplicate `run-the-gates-ci-lists`
+    exists to stop. It is generated between markers now, from the one place the
+    gates are declared (`pin-unremovable-duplicates`).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import gate_steps as gs
+
+    target = repo_root / "docs" / "validation-checklist.md"
+    text = target.read_text(encoding="utf-8")
+    if gs.BEGIN not in text or gs.END not in text:
+        print(f"❌ {target} has no {gs.BEGIN} / {gs.END} markers to write the gates table between")
+        return 1
+    head, rest = text.split(gs.BEGIN, 1)
+    _old, tail = rest.split(gs.END, 1)
+    expected = head + gs.BEGIN + "\n" + gs.render_table(gs.gates(repo_root)) + gs.END + tail
+    if check_only:
+        if text == expected:
+            print("✅ validation-checklist.md gates table matches the workflow tags")
+            return 0
+        print(f"❌ {target} has drifted from the `{gs.TAG}` tags — "
+              "run generate-ide-config.py --gates")
+        sys.stdout.writelines(difflib.unified_diff(
+            text.splitlines(keepends=True), expected.splitlines(keepends=True),
+            fromfile="committed/validation-checklist.md", tofile="generated/validation-checklist.md",
+        ))
+        return 1
+    target.write_text(expected, encoding="utf-8")
+    print(f"✅ Written the gates table in {target} from the workflow tags")
+    return 0
+
+
+def _hooks_mode(repo_root: Path, check_only: bool) -> int:
+    """The IDE hook configs, from the registry's `ides`.
+
+    Written only where the config schema is verified — a file in a shape nobody
+    has confirmed looks like enforcement and may be ignored in silence. The
+    adapters read and answer all six dialects either way.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import gate_ides as gi
+
+    problems = 0
+    for ide in gi.GENERATED:
+        target = repo_root / gi.ADAPTERS[ide].config_path
+        existing = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else None
+        expected = json.dumps(gi.render_config(ide, existing), indent=2, ensure_ascii=False) + "\n"
+        actual = target.read_text(encoding="utf-8") if target.is_file() else None
+        if check_only:
+            if actual == expected:
+                print(f"✅ {gi.ADAPTERS[ide].config_path} matches the registry")
+                continue
+            problems += 1
+            print(f"❌ {gi.ADAPTERS[ide].config_path} "
+                  f"{'is missing' if actual is None else 'has drifted'} — run generate-ide-config.py --hooks")
+            if actual is not None:
+                sys.stdout.writelines(difflib.unified_diff(
+                    actual.splitlines(keepends=True), expected.splitlines(keepends=True),
+                    fromfile=f"committed/{ide}", tofile=f"generated/{ide}"))
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(expected, encoding="utf-8")
+        print(f"✅ Written {gi.ADAPTERS[ide].config_path} from the registry")
+    not_generated = [i for i in gi.IDES if i not in gi.GENERATED]
+    print(f"ℹ️  Not generated (no verified config schema yet, the adapter still reads them): "
+          f"{', '.join(not_generated)}")
+    return 1 if problems else 0
 
 
 def _render_cursorrules(rules: dict, stack: str, ctx: dict[str, str]) -> str:
@@ -112,6 +309,12 @@ def _render_cursorrules(rules: dict, stack: str, ctx: dict[str, str]) -> str:
             lines.append(f"- Test command for this project: {ctx['test_cmd']}")
         lines.append("")
 
+    block = _design_start_block(rules, "## DESIGN START — BEFORE YOU WRITE CODE")
+    if block:
+        lines.append(block)
+    notes = _repo_notes_block(ctx)
+    if notes:
+        lines.append(notes.replace("## This repository", "## THIS REPOSITORY"))
     stack_def = (rules.get("stacks") or {}).get(stack)
     next_no = len(rules.get("pillars", [])) + 1
     if stack_def:
@@ -149,6 +352,7 @@ def _render_claude_md(rules: dict, ctx: dict[str, str]) -> str:
 ## Design & Validation Playbooks
 {pb_lines}
 """
+    design_start = _design_start_block(rules)
     return f"""# AgentSmith — Claude Code Instructions
 # Project: {ctx["project_name"]} | Owner: {ctx["owner_id"]}
 # Auto-generated from templates/agent-rules.yaml — do not edit this file directly.
@@ -156,6 +360,8 @@ def _render_claude_md(rules: dict, ctx: dict[str, str]) -> str:
 ## Compliance
 Follow all rules in `.cursorrules` exactly. They are not suggestions.
 
+{design_start}
+{_repo_notes_block(ctx)}
 ## Session Start Checklist
 1. Read `.agent-history.log` — surface any unresolved MAJOR/CRITICAL entries to the user.
 2. Check `.agent-rfc/` — confirm a spec exists before touching any source file.
@@ -223,6 +429,8 @@ the intent, not just the letter.
 ## Rules
 {pillars}
 
+{_design_start_block(rules)}
+{_repo_notes_block(ctx)}
 ## Stack ({stack})
 {addendum}
 {playbook_section}
@@ -275,6 +483,8 @@ every request.
 
 {chr(10).join(lines)}
 
+{_design_start_block(rules)}
+{_repo_notes_block(ctx)}
 ## {stack} specifics
 {stack_rules or "- (none for this stack)"}
 {playbook_line}
@@ -326,6 +536,8 @@ def _render_skill(skill: dict, rules: dict, ctx: dict[str, str]) -> str:
         lines.append(f"- Owner: {ctx['owner_id']} | Project: {ctx['project_name']}")
         return "\n".join(lines) + "\n"
 
+    if 1 in skill.get("pillars", []):
+        lines.append("- " + "\n- ".join(_design_start_lines(rules)) if _design_start_lines(rules) else "")
     pillar_by_id = {p["id"]: p for p in rules.get("pillars", [])}
     for pid in skill.get("pillars", []):
         pillar = pillar_by_id.get(pid)
@@ -387,11 +599,35 @@ def main() -> None:
     ap.add_argument("--test-cmd", default=None)
     ap.add_argument("--framework-version", default=None)
     ap.add_argument(
+        "--write",
+        action="store_true",
+        help="Regenerate the rule files even where they exist. The default never "
+        "overwrites (first provisioning); a governed repo that tracks them regenerates with this.",
+    )
+    ap.add_argument(
         "--check-only",
         action="store_true",
         help="Don't write files — regenerate in memory and diff against what's "
         "already committed. Exits 1 if .cursorrules/CLAUDE.md/skill.md have "
         "drifted from templates/agent-rules.yaml (Pillar 6/7 CI gate).",
+    )
+    ap.add_argument(
+        "--hooks",
+        action="store_true",
+        help="Regenerate the IDE hook configs from governance.json's `ides`; with --check-only, "
+        "exit 1 when a committed one has drifted.",
+    )
+    ap.add_argument(
+        "--gates",
+        action="store_true",
+        help="Regenerate the gates table in docs/validation-checklist.md from the "
+        "`# agentsmith:gate` tags in .github/workflows; with --check-only, exit 1 when it has drifted.",
+    )
+    ap.add_argument(
+        "--registry",
+        action="store_true",
+        help="Compile agent-rules.yaml into governance.json beside it (the process gate's registry); "
+        "with --check-only, exit 1 when the committed one differs.",
     )
     args = ap.parse_args()
 
@@ -415,22 +651,35 @@ def main() -> None:
 
     stack = args.stack or detected_stack
     rules = _load_rules(rules_file)
+    if args.hooks:
+        sys.exit(_hooks_mode(Path(args.repo_root).resolve(), args.check_only))
+    if args.gates:
+        sys.exit(_gates_mode(Path(args.repo_root).resolve(), args.check_only))
+    if args.registry:
+        sys.exit(_registry_mode(rules_file, rules, args.check_only))
+    extends = _repo_extends(repo_root)
+    declared = _tenant_declaration(repo_root)
     ctx = {
-        "project_name": args.project_name or _default_project_name(repo_root),
+        "rules_extra": extends.get("rules_extra") or [],
+        "project_name": args.project_name or declared.get("tenant.name") or _default_project_name(repo_root),
         "owner_id": args.owner_id
-        or os.environ.get("AGENT_OWNER_ID", "unknown@unknown"),
+        or os.environ.get("AGENT_OWNER_ID")
+        or declared.get("tenant.owner")
+        or "unknown@unknown",
         "otel_endpoint": args.otel_endpoint
         or os.environ.get("AGENT_PHOENIX_ENDPOINT", "http://localhost:6006"),
-        "test_cmd": args.test_cmd or detected_test_cmd,
+        "test_cmd": args.test_cmd or extends.get("test_command") or detected_test_cmd,
         "framework_version": args.framework_version
-        or os.environ.get("FRAMEWORK_VERSION", "1.0.0"),
+        or os.environ.get("FRAMEWORK_VERSION")
+        or declared.get("framework.version")
+        or "1.0.0",
     }
 
     if args.check_only:
         sys.exit(0 if _check_drift(repo_root, rules, stack, ctx) else 1)
 
     cursorrules_path = repo_root / ".cursorrules"
-    if not cursorrules_path.exists():
+    if args.write or not cursorrules_path.exists():
         cursorrules_path.write_text(_render_cursorrules(rules, stack, ctx))
         print(
             f"✅ Written .cursorrules ({len(rules.get('pillars', []))} pillars "
@@ -438,22 +687,22 @@ def main() -> None:
         )
 
     claude_md_path = repo_root / "CLAUDE.md"
-    if not claude_md_path.exists():
+    if args.write or not claude_md_path.exists():
         claude_md_path.write_text(_render_claude_md(rules, ctx))
         print("✅ Written CLAUDE.md from agent-rules.yaml")
 
     agents_md_path = repo_root / "AGENTS.md"
-    if not agents_md_path.exists():
+    if args.write or not agents_md_path.exists():
         agents_md_path.write_text(_render_agents_md(rules, stack, ctx))
         print("✅ Written AGENTS.md (Codex / cross-tool) from agent-rules.yaml")
 
     gemini_md_path = repo_root / "GEMINI.md"
-    if not gemini_md_path.exists():
+    if args.write or not gemini_md_path.exists():
         gemini_md_path.write_text(_render_gemini_md(rules, stack, ctx))
         print("✅ Written GEMINI.md (Gemini CLI) from agent-rules.yaml")
 
     copilot_path = repo_root / ".github" / "copilot-instructions.md"
-    if not copilot_path.exists():
+    if args.write or not copilot_path.exists():
         copilot_path.parent.mkdir(parents=True, exist_ok=True)
         copilot_path.write_text(_render_copilot_instructions(rules, stack, ctx))
         print("✅ Written .github/copilot-instructions.md from agent-rules.yaml")
@@ -475,7 +724,7 @@ def main() -> None:
     for skill in rules.get("skills", []):
         skill_dir = repo_root / ".agents" / "skills" / skill["id"]
         skill_path = skill_dir / "skill.md"
-        if not skill_path.exists():
+        if args.write or not skill_path.exists():
             skill_dir.mkdir(parents=True, exist_ok=True)
             skill_path.write_text(_render_skill(skill, rules, ctx))
 

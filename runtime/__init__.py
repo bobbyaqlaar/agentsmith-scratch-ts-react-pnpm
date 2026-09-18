@@ -15,5 +15,5 @@ Components:
 These components are NOT used in developer IDE sessions (dev/hybrid mode).
 For dev sessions, use scripts/multi_agent_system.py or scripts/local_agent_stack.py.
 
-See SPECS.md §25 for the full production runtime specification.
+See docs/DESIGN.md › Production Runtime for the full production runtime specification.
 """

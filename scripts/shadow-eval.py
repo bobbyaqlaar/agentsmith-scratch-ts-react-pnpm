@@ -1,6 +1,6 @@
 """
 shadow-eval.py — Async shadow eval sampler over live production traces
-(Product_Archive.md P1c, SPECS.md §9: "An async sampler evaluates 5% of
+(docs/PRODUCT_ARCHIVE.md P1c, docs/DESIGN.md › Evaluation Framework: "An async sampler evaluates 5% of
 production traces post-hoc").
 
 Workflow:
@@ -15,7 +15,7 @@ Workflow:
      — no project_response generation step needed, the span already has a
      real production input/output to score.
   4. Write the result back to Phoenix as a span annotation named
-     "shadow_eval" with metadata `{"eval.type": "shadow"}` (SPECS.md §9's
+     "shadow_eval" with metadata `{"eval.type": "shadow"}` (docs/DESIGN.md › Evaluation Framework's
      documented tag) via POST /v1/span_annotations — this is Phoenix's
      real mechanism for attaching post-hoc scores to existing spans;
      "experiments" in Phoenix's API are dataset/offline-run objects, not a
@@ -27,7 +27,7 @@ Workflow:
      the same span.
 
 Shadow evals never auto-promote to the golden dataset — that stays
-HITL-gated via `ai-stack-promote`. Failures are surfaced for a human to
+HITL-gated via `agentsmith promote`. Failures are surfaced for a human to
 review via portal/lib/promotions.ts's suggested-promotion queue, not
 applied automatically.
 

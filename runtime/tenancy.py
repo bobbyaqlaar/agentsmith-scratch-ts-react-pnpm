@@ -26,7 +26,8 @@ and two tenants' audit trail into one bucket, and look fine doing it.
 Not derived from the repo or directory name, though it is tempting and would
 even work here: KYC is `isolation: dedicated` and single-tenant, so its tenant
 happens to equal its repo. The framework default is a SHARED pool partitioned by
-tenant_id (SPECS.md §23), where one repo serves many tenants — so a repo-derived
+tenant_id (docs/DESIGN.md › Tenancy Model (Independent Repositories)), where one repo serves many
+tenants — so a repo-derived
 id would pass on the tenant you built it against and silently collapse every
 shared-pool tenant into one. Production has no repo either: the span comes from a
 container with no `.git` and no GITHUB_REPOSITORY, so it would resolve in CI and

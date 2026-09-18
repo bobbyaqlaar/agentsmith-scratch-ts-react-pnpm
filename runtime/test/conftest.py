@@ -70,3 +70,18 @@ def identity_processor(_exporter):
     trace.get_tracer_provider().add_span_processor(processor)
     yield processor
     processor.shutdown()
+
+
+def pytest_configure(config):
+    """Isolate the suite from this machine's `agentsmith` state.
+
+    `agentsmith mode hybrid` and `agentsmith dashboard start` write
+    ~/.agent-framework/state/, which the gateway and runtime/otlp.py read after
+    the environment. Without this a developer's chosen mode would decide which
+    profile these tests resolve. The security harness runs these suites too, so
+    it inherits the isolation.
+    """
+    import os
+    import tempfile
+
+    os.environ.setdefault("AGENTSMITH_STATE_DIR", tempfile.mkdtemp(prefix="agentsmith-test-state-"))

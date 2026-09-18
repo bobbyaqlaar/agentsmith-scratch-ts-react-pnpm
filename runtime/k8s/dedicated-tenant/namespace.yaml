@@ -1,4 +1,4 @@
-# Dedicated worker pool (SPECS.md §23, §30): tenant.isolation: dedicated
+# Dedicated worker pool (docs/DESIGN.md › Tenancy Model (Independent Repositories), Enterprise Install and Compliance Pack): tenant.isolation: dedicated
 # gets its own Kubernetes namespace, separate from the shared worker fleet.
 apiVersion: v1
 kind: Namespace

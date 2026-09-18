@@ -11,9 +11,9 @@ the value:
     portal/lib/tracing.ts          the full chain, and the only one that was right
 
 Every Python copy ended with `f"{endpoint.rstrip('/')}/v1/traces"`. The portal's
-does not, and its comment says why: this repo's OWN convention — OPERATIONS.md,
-docs/team-observability.md, docker-compose.yml, SPECS.md §699 and
-`ai-dashboard-start` — sets `OTEL_EXPORTER_OTLP_ENDPOINT` to a full
+does not, and its comment says why: this repo's OWN convention — docs/UserManual.md,
+docs/team-observability.md, docker-compose.yml, docs/DESIGN.md › Installation Procedure and
+the old `ai-dashboard-start` shell function — sets `OTEL_EXPORTER_OTLP_ENDPOINT` to a full
 `…/v1/traces` URL, in the variable the OTLP spec defines as a BASE. So a
 consumer that appends unconditionally posts to `/v1/traces/v1/traces` and drops
 everything on a 404 that surfaces nowhere.
@@ -88,6 +88,13 @@ def resolve_otlp_endpoint(
         base = (environ.get(var) or "").strip()
         if base:
             break
+    if not base:
+        # Last: the dashboard `agentsmith dashboard start` recorded for this
+        # machine. Python only — the portal runs in a container that cannot see
+        # it, and is started with the variables above instead.
+        from runtime.machine.state import read_phoenix_endpoint
+
+        base = read_phoenix_endpoint(env) or ""
     if not base:
         return None
 

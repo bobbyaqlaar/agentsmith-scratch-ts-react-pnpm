@@ -14,16 +14,18 @@ writing to what the gate is made of, and recording an approval from a shell.
 **Stated limit, because it decides how much this is worth.** It reads the
 command an IDE is about to run — not what that command does. `bash -c "$(…)"`,
 a script file, a shell alias and a Makefile target all reach git without
-passing through here. That is why G3's sweep exists and why the commit and CI
-gates are the ones that cannot be talked around. This makes the obvious bypass
-visible and costly, not impossible.
+passing through here; so do `git config --edit`, a write straight into
+`.git/config`, and an `export GIT_CONFIG_…` on an earlier line. That is why
+G3's sweep exists and why the commit and CI gates are the ones that cannot be
+talked around. This makes the obvious bypass visible and costly, not
+impossible.
 """
 
 from __future__ import annotations
 
 import re
 import shlex
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 SEE = "See AgentSmith's docs/process-gates.md."
 # What the gate is made of. Editing one of these is how you would switch it off,
@@ -90,27 +92,99 @@ def _protects(path: str) -> bool:
     return any(cleaned == protected or cleaned.startswith(protected) for protected in PROTECTED)
 
 
+# Options that take the NEXT word as their value — before the subcommand, and
+# after `git config`. Without them a value is read as the subcommand, a key or
+# a setting: `git -C ../kyc commit --no-verify` had `../kyc` as its subcommand.
+_GIT_OPTION_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+_CONFIG_OPTION_VALUE = {"--file", "-f", "--blob", "--type", "--default", "--comment", "--value", "--url"}
+# `git config` asks or removes. Everything else that names the key with a value
+# after it is a write. The bare words are git >= 2.46's subcommand form.
+_CONFIG_VERBS = {"get", "list", "set", "unset", "edit", "remove-section", "rename-section"}
+_CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l", "get", "list"}
+_CONFIG_UNSETS = {"--unset", "--unset-all", "unset"}
+_CONFIG_SECTION_REMOVALS = {"--remove-section", "--rename-section", "remove-section", "rename-section"}
+_HOOKS_OFF_FOR_ONE_CALL = ("`{}` runs this command with the hooks turned off. The commit gate is not optional; "
+                           f"the sweep finds what skips it and the next commit has to repair it. {SEE}")
+# `NAME=value cmd` and `env cmd` run cmd. Read as the program, one assignment in
+# front skipped every check below.
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _environment_and_command(words: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """The `NAME=value` and `env` words in front of a command, and the command."""
+    index = 0
+    while index < len(words) and (_ASSIGNMENT.match(words[index]) or words[index] == "env"):
+        index += 1
+    return list(words[:index]), list(words[index:])
+
+
+def _subcommand_at(arguments: Sequence[str]) -> Optional[int]:
+    """Where git's subcommand is: the first word that is neither a global
+    option nor the value of one."""
+    index = 0
+    while index < len(arguments):
+        if arguments[index] in _GIT_OPTION_VALUE:
+            index += 2
+        elif arguments[index].startswith("-"):
+            index += 1
+        else:
+            return index
+    return None
+
+
+def _config_refusal(arguments: Sequence[str], hooks_path: str) -> Optional[str]:
+    """`git config …` — refused when it writes or removes core.hooksPath.
+
+    A read is not a write. "No value after the key" is git asking, and
+    `''` after it is git setting the empty value; they were one case here, so
+    `git config core.hooksPath` was refused as pointing the repo at `<empty>`.
+    """
+    flags, operands = set(), []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in _CONFIG_OPTION_VALUE:
+            index += 2
+            continue
+        (flags.add if argument.startswith("-") else operands.append)(argument)
+        index += 1
+    if operands and operands[0] in _CONFIG_VERBS:
+        flags.add(operands.pop(0))
+
+    removal = (f"it removes core.hooksPath, and with none set git runs .git/hooks, which holds none of this "
+               f"repo's gates — the ones in {hooks_path} stop running. Re-arming it — "
+               f"`git config core.hooksPath {hooks_path}` — is allowed and is what the sweep asks for. {SEE}")
+    # Removals before reads: `--get --unset` is refused by git, and here too.
+    if flags & _CONFIG_SECTION_REMOVALS and operands and operands[0].lower() == "core":
+        return f"`git config {' '.join(arguments)}` removes the whole core section: {removal}"
+    keys = [i for i, operand in enumerate(operands) if operand.lower() == "core.hookspath"]
+    if not keys:
+        return None
+    if flags & _CONFIG_UNSETS:
+        return f"`git config {' '.join(arguments)}`: {removal}"
+    if flags & _CONFIG_READS or keys[0] + 1 >= len(operands):
+        return None
+    target = operands[keys[0] + 1].strip("'\"")
+    if target == hooks_path:
+        return None
+    return (f"`git config core.hooksPath {target or '<empty>'}` points this repo away from "
+            f"{hooks_path}, which is where its gates live. Re-arming it — "
+            f"`git config core.hooksPath {hooks_path}` — is allowed and is what the sweep asks for. {SEE}")
+
+
 def _git_refusal(words: Sequence[str], hooks_path: str) -> Optional[str]:
     """`git …` — the three ways to run it without the hooks."""
     arguments = list(words[1:])
     # `git -c core.hooksPath=… <anything>`: the hooks are off for that one call.
+    # git reads the key case-insensitively, and `--config-env=` is `-c` again.
     for argument in arguments:
-        if argument.startswith("core.hooksPath=") or argument.startswith("core.hookspath="):
-            return (f"`git -c {argument}` runs this command with the hooks turned off. The commit gate "
-                    f"is not optional; the sweep finds what skips it and the next commit has to repair it. {SEE}")
-    words_after_options = [a for a in arguments if not a.startswith("-")]
-    subcommand = words_after_options[0] if words_after_options else ""
+        if argument.lower().removeprefix("--config-env=").startswith("core.hookspath="):
+            return _HOOKS_OFF_FOR_ONE_CALL.format(" ".join(words))
+    at = _subcommand_at(arguments)
+    subcommand = arguments[at] if at is not None else ""
 
     if subcommand == "config":
-        values = [a for a in arguments if not a.startswith("-")][1:]
-        if any(a.lower() == "core.hookspath" for a in values):
-            wanted = values[values.index(next(v for v in values if v.lower() == "core.hookspath")) + 1:]
-            target = wanted[0].strip("'\"") if wanted else ""
-            if target != hooks_path:
-                return (f"`git config core.hooksPath {target or '<empty>'}` points this repo away from "
-                        f"{hooks_path}, which is where its gates live. Re-arming it — "
-                        f"`git config core.hooksPath {hooks_path}` — is allowed and is what the sweep asks for. {SEE}")
-        return None
+        return _config_refusal(arguments[at + 1:], hooks_path)
 
     if subcommand in ("commit", "merge", "rebase", "cherry-pick", "revert"):
         if "--no-verify" in arguments or "-n" in arguments:
@@ -125,10 +199,16 @@ def _git_refusal(words: Sequence[str], hooks_path: str) -> Optional[str]:
 
 def refusal(command: str, hooks_path: str = ".githooks") -> Optional[str]:
     """Why this shell command must not run, or None to let it through."""
-    for words in _segments(command):
+    for segment_words in _segments(command):
+        segment = " ".join(segment_words)
+        environment, words = _environment_and_command(segment_words)
+        # GIT_CONFIG_KEY_<n> and GIT_CONFIG_PARAMETERS are `git -c` from the environment.
+        for assignment in environment:
+            name, _, value = assignment.partition("=")
+            if name.startswith("GIT_CONFIG") and "core.hookspath" in value.lower():
+                return _HOOKS_OFF_FOR_ONE_CALL.format(assignment)
         if not words:
             continue
-        segment = " ".join(words)
         program = words[0].rsplit("/", 1)[-1]
 
         if program == "git":

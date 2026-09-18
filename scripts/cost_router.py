@@ -199,10 +199,10 @@ _consecutive_failures: dict[str, int] = {}
 # Module-level dict keyed by model name, only shrinks via record_success for
 # individual models — fine for this file's actual usage (dev-mode, one
 # process per session, a handful of model names), but unbounded if ever used
-# in a long-running process with many distinct/dynamic model ids
-# (docs/PRODUCT_ARCHIVE.md 4.4). This is a cheap upper bound, not an LRU — if it
-# ever fires, dropping the whole dict just means the escalation counters
-# reset to 0, which is the same as every model's first call ever.
+# in a long-running process with many distinct/dynamic model ids. This is a
+# cheap upper bound, not an LRU — if it ever fires, dropping the whole dict
+# just means the escalation counters reset to 0, which is the same as every
+# model's first call ever.
 _MAX_TRACKED_MODELS = 256
 
 

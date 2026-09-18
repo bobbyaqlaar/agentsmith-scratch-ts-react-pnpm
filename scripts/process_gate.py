@@ -417,7 +417,7 @@ def check_change(
     message: str,
     read: Reader,
     config: Config,
-    added: Optional[List[str]] = None,
+    added: Optional[List[Tuple[str, str]]] = None,
     previous: Optional[Reader] = None,
     evidence: Optional["gp.Resolver"] = None,
 ) -> Tuple[List[str], List[str]]:
@@ -426,7 +426,8 @@ def check_change(
     # it runs before the gated-paths shortcut below.
     xref: List[str] = []
     if config.artifacts_mode in ("report", "enforce") and added:
-        xref = cross_reference_problems(added)
+        registry, _ = config.load_registry(read)
+        xref = cross_reference_problems(added, read, registry.artifacts if registry else None)
     gated = sorted(f for f in files if config.is_gated(f))
     if not gated:
         if config.artifacts_mode == "enforce":
@@ -571,9 +572,27 @@ def _worktree_reader(root: Path) -> Reader:
     return read
 
 
-def _added_lines(diff: str) -> List[str]:
-    """The lines a diff adds, without the `+`. `-U0` keeps this to what changed."""
-    return [line[1:] for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")]
+def _added_lines(diff: str) -> List[Tuple[str, str]]:
+    """(file, line) for each line a diff adds, without the `+`. `-U0` keeps
+    this to what changed.
+
+    The file comes with each line because a pointer in it is resolved beside
+    the file it is written in. Headers are read only before a file's first
+    hunk, so an added line that itself begins `++` is content, not a header.
+    """
+    added: List[Tuple[str, str]] = []
+    path, in_hunk = "", False
+    for line in diff.splitlines():
+        if line.startswith("diff "):  # `diff --git`, or `diff --cc` for a merge
+            path, in_hunk = "", False
+        elif not in_hunk and line.startswith("+++ "):
+            name = line[4:].strip().strip('"')
+            path = name[2:] if name.startswith("b/") else ""
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith("+"):
+            added.append((path, line[1:]))
+    return added
 
 
 def _gated_lines(numstat: str, config: Config) -> int:
@@ -1000,11 +1019,21 @@ def check_commits(root: Path, commits: List[str]) -> Tuple[Failures, List[Tuple[
         if config is None:
             unadopted.append((commit, subject))
             continue
-        if not any(config.is_gated(f) for f in files):
+        gated = any(config.is_gated(f) for f in files)
+        if not gated and config.artifacts_mode not in ("report", "enforce"):
+            continue
+        added = _added_lines(git("show", "--format=", "-U0", "--root", commit, cwd=root, check=False))
+        if not gated:
+            # Documents are mostly ungated, and the cross-reference rule is about
+            # documents: the commit gate reads such a commit's pointers, so this
+            # layer — which exists for commits that skipped that gate — must too.
+            errors, notes = check_change(files, 0, message, read, config, added)
+            if errors:
+                failures.append((commit, subject, errors))
+            escapes.extend((commit, subject, n) for n in notes)
             continue
         gated_commits += 1
         lines = _gated_lines(git("diff-tree", "--no-commit-id", "--numstat", "-r", "--root", commit, cwd=root), config)
-        added = _added_lines(git("show", "--format=", "-U0", "--root", commit, cwd=root, check=False))
         parent = git("rev-parse", "--verify", "-q", f"{commit}^", cwd=root, check=False).strip()
         previous = _reader_at(root, parent) if parent else None
         evidence = gp.evidence_resolver(root, commit) if config.pillar_policy.mode != "off" else None
@@ -1120,13 +1149,26 @@ def split_record_ref(value: str) -> Tuple[Optional[str], Optional[str]]:
 
 ARTIFACT_MODES = ("off", "report", "enforce")
 
-# A pointer into another document's numbering — `SPECS.md §23`, `DESIGN.md#L120`.  <!-- xref: example -->
-# Section numbers move on the next edit of the document they point into; a
-# heading name or the document alone does not.
-_XREF = re.compile(r"[\w./-]+\.md\s*(?:§|#L)\s*[\w.]*\d")
+# A pointer into another document by something with a digit in it:  <!-- xref: example -->
+# `SPECS.md §23`, `DESIGN.md#L120`, `docs/PRODUCT_ARCHIVE.md 4.14`,  <!-- xref: example -->
+# `` `CHANGELOG.md` 1.1.0 ``. Whether it is allowed depends on the document it  <!-- xref: example -->
+# points into, not on its shape — see cross_reference_problems.
+_XREF = re.compile(
+    r"(?<![\w/.-])(?P<doc>[\w./-]*\w\.md)\b[`'\"*)\]]*"
+    r"(?:\s*(?P<kind>§|#L)\s*|\s+)"
+    r"(?P<token>(?:[A-Za-z_]+\.?)?\d[\w.]*)"
+)
+# A number that labels a heading or a row by where it sits: `5.10`, `2.3b`, and
+# the lettered form a part or an appendix numbers its sections with, `E.1`.
+_BARE_NUMBER = re.compile(r"(?:[A-Z]\.)?\d+(?:\.\d+)*[a-z]?")
+_FENCE = re.compile(r"^\s*(```|~~~)")
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*)")
+_TABLE_LEAD = re.compile(r"^\s*\|([^|]*)\|")
+_LIST_LEAD = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\*\*([^*]+)\*\*")
 # What a line that must SHOW a bad pointer carries. Greppable, so the
 # exemptions can be counted.
 _XREF_EXEMPT = "<!-- xref: example -->"
+_XREF_HINT = f"An example that must show one carries {_XREF_EXEMPT}"
 
 
 def _glob_match(path: str, pattern: str) -> bool:
@@ -1174,23 +1216,118 @@ def artifact_problems(root: Path, registry: "gm.Registry") -> List[str]:
     return problems
 
 
-def cross_reference_problems(added: List[str]) -> List[str]:
-    """Pointers into another document's numbering, among the lines a change adds.
+def _defined_names(text: str) -> Tuple[set, set]:
+    """-> (names, leads). Every token with a digit that a heading contains, and
+    the first word of each table row and bold list item. `leads` are the ones
+    that open a heading — where a numbered heading keeps its number.
+
+    Fenced code is skipped: `# a comment` inside one is not a heading.
+    """
+    names: set = set()
+    leads: set = set()
+    fenced = False
+    for line in text.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        heading = _HEADING.match(line)
+        if heading:
+            words = heading.group(1).split()
+            for index, word in enumerate(words):
+                for token in re.findall(r"[\w.]*\d[\w.]*", word):
+                    names.add(token.strip("."))
+                    if index == 0:
+                        leads.add(token.strip("."))
+            continue
+        lead = _TABLE_LEAD.match(line) or _LIST_LEAD.match(line)
+        if lead:
+            words = re.sub(r"[`*~]", "", lead.group(1)).split()
+            if words:
+                token = words[0].strip(".:")
+                names.add(token)
+                leads.add(token)
+    return names, leads
+
+
+def _resolve_target(source: str, doc: str, read: Reader) -> Tuple[Optional[str], Optional[str]]:
+    """-> (path, text) of the document a pointer names: beside the file it is
+    written in, then from the repo root. (None, None) if this repo has neither."""
+    from posixpath import dirname, join, normpath
+
+    for candidate in (normpath(join(dirname(source), doc)), normpath(doc)):
+        if candidate.startswith("../"):
+            continue
+        text = read(candidate)
+        if text is not None:
+            return candidate, text
+    return None, None
+
+
+def _append_only(path: str, artifacts: Optional["gm.Artifacts"]) -> bool:
+    """Whether the registry declares this document a record that only grows.
+    No registry means no: every document is living, the stricter reading."""
+    if artifacts is None:
+        return False
+    return any(
+        a.append_only and (a.path == path or any(_glob_match(path, p) for p in a.patterns))
+        for a in artifacts.types
+    )
+
+
+def cross_reference_problems(
+    added: List[Tuple[str, str]], read: Reader, artifacts: Optional["gm.Artifacts"] = None
+) -> List[str]:
+    """Pointers that name nothing their target defines, among the lines a
+    change adds. -> one problem per pointer.
+
+    A pointer passes when the document it points into DEFINES the token — a
+    heading containing it, or the first word of a table row or bold list item.
+    A line number never does. A bare number (`5.10`) counts only in a document
+    the registry declares append-only: elsewhere it labels a numbered heading
+    or row, which moves on the next edit — exactly what this rule refuses.
 
     Added lines only: a repo adopting the rule has pointers already, and failing
     all of them would block the very migrations that remove them (G5b).
     """
-    problems = []
-    for line in added:
+    problems: List[str] = []
+    targets: Dict[str, Tuple[Optional[str], set, set]] = {}
+    for source, line in added:
         if _XREF_EXEMPT in line:
             continue
-        found = _XREF.search(line)
-        if found:
-            problems.append(
-                f"a new line points into another document's section numbers ({found.group(0).strip()}) — "
-                "numbers move on the next edit; name the document, or a heading inside it. "
-                f"An example that must show one carries {_XREF_EXEMPT}"
-            )
+        for found in _XREF.finditer(line):
+            token = found.group("token").rstrip(".")
+            if re.match(r"-\d", line[found.end():]):
+                continue  # 2026-09-12: a date, or a range — not a pointer
+            pointer = found.group(0).strip()
+            if found.group("kind") == "#L":
+                problems.append(
+                    f"a new line points at a line number ({pointer}) — lines move on the next edit; "
+                    f"name the document, or a heading inside it. {_XREF_HINT}"
+                )
+                continue
+            doc = found.group("doc")
+            key = f"{source}\0{doc}"
+            if key not in targets:
+                path, text = _resolve_target(source, doc, read)
+                targets[key] = (path, *_defined_names(text)) if path else (None, set(), set())
+            path, names, leads = targets[key]
+            if path is None:
+                problems.append(
+                    f"a new line points into {doc} ({pointer}), which is not in this repo — a number "
+                    f"into a document nobody can open says nothing. Name it by its path from the repo "
+                    f"root, or name the section in words. {_XREF_HINT}"
+                )
+                continue
+            bare = bool(_BARE_NUMBER.fullmatch(token))
+            positional = bare and (token in leads) and not _append_only(path, artifacts)
+            if token not in names or positional:
+                problems.append(
+                    f"a new line points at {token} in {path} ({pointer}), which is not a name that document "
+                    "defines — a heading or an entry ID is; a section or row number moves on the next "
+                    f"edit. Name the heading instead. {_XREF_HINT}"
+                )
     return problems
 
 

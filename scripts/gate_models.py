@@ -159,6 +159,10 @@ class Artifact(_Frozen):
     path: str | None = Field(default=None)
     patterns: list[str] = Field(default_factory=list)
     required: bool = True
+    # A record that only grows — the archive, the review log, the changelog.
+    # Its numbered entries never move, so a pointer to one by number names it;
+    # in any other document a bare number is a position (cross-reference rule).
+    append_only: bool = False
     note: str | None = None
 
 

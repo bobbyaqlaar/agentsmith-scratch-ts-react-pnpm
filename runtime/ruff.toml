@@ -3,6 +3,8 @@
 # files here keep your rules. `agentsmith upgrade` regenerates this file.
 extend-exclude = [
   "__init__.py",
+  "adopt.py",
+  "architectures.py",
   "cli.py",
   "config.py",
   "conversation_memory.py",
@@ -38,7 +40,6 @@ extend-exclude = [
   "provider_dispatch.py",
   "replay_webhook_server.py",
   "requirements-runtime.txt",
-  "ruff.toml",
   "security_paths.py",
   "self_correction.py",
   "structured_output.py",

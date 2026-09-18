@@ -78,8 +78,21 @@ DESIGNS_DIR = ".agent-rfc/designs"
 REVIEWS_DIR = ".agent-rfc/reviews"
 FRAMEWORK_PREFIX = "@framework/"
 # The directory this script was installed from: an AgentSmith checkout, or
-# ~/.agent-framework. `@framework/<path>` in a config resolves against it.
+# ~/.agent-framework. `@framework/<path>` in a config resolves against it first
+# (`framework_file`).
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[1]
+
+
+def framework_file(rel: str) -> Optional[Path]:
+    """`@framework/<rel>`: beside this script, then $AGENTSMITH_DIR, then
+    ~/.agent-framework. A copy of this script vendored into a tenant's scripts/
+    has no templates/ or docs/ beside it — the framework is where it came from
+    (.agent-rfc/designs/tenant-adopt.md)."""
+    roots = [FRAMEWORK_ROOT]
+    if os.environ.get("AGENTSMITH_DIR"):
+        roots.append(Path(os.environ["AGENTSMITH_DIR"]))
+    roots.append(Path.home() / ".agent-framework")
+    return next((root / rel for root in roots if (root / rel).is_file()), None)
 
 SMALL_CHANGE_LINES = 20
 # Where the graph lives, read at the commit being checked like every record.
@@ -206,10 +219,10 @@ class Config:
 
     def doc_text(self, value: str, read: Reader) -> Optional[str]:
         """A repo path is read at the commit being checked; `@framework/…`
-        beside this script, because an installed-mode tenant carries no copy."""
+        from the framework (`framework_file`), because a tenant carries no copy."""
         if value.startswith(FRAMEWORK_PREFIX):
-            path = FRAMEWORK_ROOT / value[len(FRAMEWORK_PREFIX):]
-            return path.read_text(encoding="utf-8") if path.is_file() else None
+            path = framework_file(value[len(FRAMEWORK_PREFIX):])
+            return path.read_text(encoding="utf-8") if path is not None else None
         return read(value)
 
     def display(self, value: str) -> str:
@@ -412,6 +425,56 @@ def kg_problems(files: List[str], review_text: str, read: Reader) -> List[str]:
     return []
 
 
+# ── The commit that arms the gates ───────────────────────────────────────────
+#
+# `tenant init` and `tenant adopt` arm the gates, so the commit carrying what
+# they wrote needs a design (they write one) and a review. A tool-written review
+# would claim a person looked; instead its review is `n/a: generated scaffold`,
+# accepted only where it is checkable: on the commit that arms the gates (its
+# parent carries no gate config — a root commit, or an adoption), every gated
+# file byte-for-byte what the manifest says was written
+# (.agent-rfc/designs/tenant-architecture.md, .agent-rfc/designs/tenant-adopt.md).
+# The manifest is not signed — rewriting a file AND its hash defeats it,
+# deliberately and once — so an accepted scaffold is a note, never silence.
+
+SCAFFOLD_MANIFEST = ".agenticframework/scaffold.json"
+_SCAFFOLD_REVIEW = re.compile(r"^n/?a\s*:\s*generated scaffold\s*$", re.I)
+
+
+def _manifest_author(read: Reader) -> str:
+    """The command the manifest says wrote the scaffold, for the gate's words."""
+    try:
+        return str(json.loads(read(SCAFFOLD_MANIFEST) or "{}").get("generated_by") or "agentsmith tenant init")
+    except (ValueError, AttributeError):
+        return "agentsmith tenant init"
+
+
+def scaffold_problems(gated: List[str], read: Reader, arming: bool) -> List[str]:
+    """Why this commit is not the untouched scaffold — empty when it is.
+    `arming`: this commit's parent carries no gate config."""
+    if not arming:
+        return ["is accepted only on the commit that arms the gates — a repository's first commit, or the "
+                f"one `tenant adopt` prepared — and this commit's parent already carries {CONFIG}; "
+                "record a review in .agent-rfc/reviews/"]
+    text = read(SCAFFOLD_MANIFEST)
+    if text is None:
+        return [f"{SCAFFOLD_MANIFEST} is not in this commit, so nothing vouches for the scaffold — "
+                "record a review in .agent-rfc/reviews/"]
+    try:
+        files = json.loads(text).get("files") or {}
+    except (ValueError, AttributeError):
+        return [f"{SCAFFOLD_MANIFEST} is not a scaffold manifest — record a review in .agent-rfc/reviews/"]
+    by = _manifest_author(read)
+    problems = []
+    for path in gated:
+        body = read(path)
+        if path not in files:
+            problems.append(f"{path} is not part of the scaffold `{by}` wrote — review it")
+        elif body is None or hashlib.sha256(body.encode("utf-8")).hexdigest() != files[path]:
+            problems.append(f"{path} is not what `{by}` wrote (its hash differs) — review it")
+    return problems
+
+
 def record_text(kind: str, value: str, read: Reader, single: bool
                 ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """The text a `Design:` or `Review:` trailer points at, in this commit.
@@ -446,8 +509,13 @@ def check_change(
     added: Optional[List[Tuple[str, str]]] = None,
     previous: Optional[Reader] = None,
     evidence: Optional["gp.Resolver"] = None,
+    arming: bool = False,
 ) -> Tuple[List[str], List[str]]:
-    """One commit's worth of files against its message. -> (errors, notes)."""
+    """One commit's worth of files against its message. -> (errors, notes).
+
+    `arming` — this commit's parent carries no gate config: a root commit or an
+    adoption, the only commit that may claim to be the untouched scaffold
+    `tenant init` or `tenant adopt` wrote (`scaffold_problems`)."""
     # The cross-reference rule is about documents, which are mostly ungated, so
     # it runs before the gated-paths shortcut below.
     xref: List[str] = []
@@ -534,6 +602,13 @@ def check_change(
     review_value = trailer(message, "Review")
     if review_value is None:
         errors.append(f"missing 'Review: {review_wanted}' trailer")
+    elif _SCAFFOLD_REVIEW.match(review_value):
+        problems = scaffold_problems(gated, read, arming)
+        if problems:
+            errors.extend(f"Review: n/a: generated scaffold — {p}" for p in problems)
+        else:
+            notes.append(f"Review: n/a: generated scaffold — {len(gated)} gated file(s) match "
+                         f"{SCAFFOLD_MANIFEST}, as `{_manifest_author(read)}` wrote them")
     elif not na("Review", review_value):
         path, file_path, text, problem = record_text("Review", review_value, read, single)
         if problem:
@@ -944,7 +1019,8 @@ def cmd_commit_msg(message_file: str, amend: bool = False) -> int:
     # moment it is staged.
     previous = _reader_at(root, base[0])
     evidence = gp.evidence_resolver(root, "") if config.pillar_policy.mode != "off" else None
-    errors, notes = check_change(files, lines, message, read, config, added, previous, evidence)
+    errors, notes = check_change(files, lines, message, read, config, added, previous, evidence,
+                                 arming=previous(CONFIG) is None)
 
     # A commit that skipped the gate blocks the next commit — unless the next
     # commit is the repair. pre-commit cannot decide that (no message yet), so
@@ -1197,7 +1273,8 @@ def check_commits(root: Path, commits: List[str], records: Optional[List[Dict[st
         parent = git("rev-parse", "--verify", "-q", f"{commit}^", cwd=root, check=False).strip()
         previous = _reader_at(root, parent) if parent else None
         evidence = gp.evidence_resolver(root, commit) if config.pillar_policy.mode != "off" else None
-        errors, notes = check_change(files, lines, message, read, config, added, previous, evidence)
+        errors, notes = check_change(files, lines, message, read, config, added, previous, evidence,
+                                     arming=previous is None or previous(CONFIG) is None)
         if errors:
             failures.append((commit, subject, errors))
         escapes.extend((commit, subject, n) for n in notes)

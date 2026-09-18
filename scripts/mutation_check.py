@@ -606,6 +606,133 @@ CATALOGUE: tuple[Suite, ...] = (
             ),
         ),
     ),
+    # .agent-rfc/designs/tenant-adopt.md — an existing repository under the
+    # gates, the hooks it ran kept behind them, and `tenant init` vendoring.
+    Suite(
+        name="tenant_adopt",
+        tests=(
+            "scripts/test/test_hook_chain.py",
+            "scripts/test/test_tenant_adopt.py",
+            "scripts/test/test_scaffold_review.py",
+            "scripts/test/test_installed_runtime_tenant.py",
+        ),
+        mutations=(
+            Mutation(
+                "the chain runs the prior hook even when it points back at .githooks — it calls itself forever",
+                ".githooks/chain",
+                '[ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] || exit 0',
+                "true",
+            ),
+            Mutation(
+                # Not `|| exit $?` removed: the hook runs under `set -e`, so that
+                # mutation is equivalent and survived. Running the chain first is
+                # the real break.
+                "the prior commit-msg runs before the gate, even for a message the gate refuses",
+                ".githooks/commit-msg",
+                '"$hook_dir/process-gate" commit-msg "${amend[@]+"${amend[@]}"}" "$msg_file" || exit $?',
+                'bash "$hook_dir/chain" commit-msg "$msg_file"\n'
+                '"$hook_dir/process-gate" commit-msg "${amend[@]+"${amend[@]}"}" "$msg_file" || exit $?',
+            ),
+            Mutation(
+                "pre-push stops chaining — the repository's own pre-push silently stops running",
+                ".githooks/pre-push",
+                'exec bash "$hook_dir/chain" pre-push "$@"',
+                "exit 0",
+            ),
+            Mutation(
+                "any commit may claim to be the one that arms the gates",
+                "scripts/process_gate.py",
+                "    if not arming:\n",
+                "    if False:\n",
+            ),
+            Mutation(
+                "only a root commit arms the gates again — an adoption commit is refused",
+                "scripts/process_gate.py",
+                "arming=previous is None or previous(CONFIG) is None)",
+                "arming=previous is None)",
+            ),
+            Mutation(
+                "a vendored gate looks for @framework/ files only beside itself",
+                "scripts/process_gate.py",
+                "    roots.append(Path.home() / \".agent-framework\")\n    return next(",
+                "    roots = roots[:1]\n    return next(",
+            ),
+            Mutation(
+                "adopt chains the machine's post-checkout and post-commit — they vendor into the repository",
+                "runtime/adopt.py",
+                "prior=plan.prior_hooks, provisioning=False)",
+                "prior=plan.prior_hooks, provisioning=True)",
+            ),
+            Mutation(
+                "the rules block is appended again on every run",
+                "runtime/adopt.py",
+                "    if _RULES_BLOCK.search(existing):",
+                "    if False:",
+            ),
+            Mutation(
+                "adopt replaces the repository's Claude settings instead of merging into them",
+                "runtime/adopt.py",
+                "        put(rel, json.dumps(gate_ides.render_config(ide, existing), indent=2) + \"\\n\")",
+                "        put(rel, json.dumps(gate_ides.render_config(ide, None), indent=2) + \"\\n\")",
+            ),
+            Mutation(
+                "an explicit autopush setting is overwritten",
+                "runtime/adopt.py",
+                'and not _git(root, "config", "--get", "agentsmith.autopush"):',
+                ":",
+            ),
+            Mutation(
+                "tenant init no longer runs the machine's post-checkout before its first commit",
+                "runtime/cli.py",
+                "    written += _vendor(root, prior)\n",
+                "",
+            ),
+            Mutation(
+                "the machine's post-checkout vendors into an adopted repository",
+                "hooks/post-checkout",
+                "   && grep -qs '\"generated_by\": \"agentsmith tenant adopt\"' "
+                "\"$REPO_ROOT/.agenticframework/scaffold.json\"; then",
+                "   && false; then",
+            ),
+            Mutation(
+                "an unfinished adoption is told it is already under the gates",
+                "runtime/adopt.py",
+                "        if committed.returncode == 0:",
+                "        if True:",
+            ),
+            Mutation(
+                "a rule file AgentSmith generated gets the same rules appended again",
+                "runtime/adopt.py",
+                "target.write_text(text if generated_by_agentsmith(existing) else",
+                "target.write_text(text if False else",
+            ),
+            Mutation(
+                "tenant init runs any post-checkout and vouches for what it wrote",
+                "runtime/cli.py",
+                " or not is_machine_hook(hook):",
+                ":",
+            ),
+            Mutation(
+                "a malformed settings file is found only after adopt has started writing",
+                "runtime/adopt.py",
+                "    for rel in (\".claude/settings.json\", \".cursor/hooks.json\"):\n"
+                "        if (root / rel).is_file():",
+                "    for rel in ():\n        if (root / rel).is_file():",
+            ),
+            Mutation(
+                "a --force re-run stops vouching for what an earlier run wrote",
+                "runtime/cli.py",
+                '            earlier = json.loads(manifest_path.read_text(encoding="utf-8")).get("files") or {}',
+                "            earlier = {}",
+            ),
+            Mutation(
+                "the gate's note stops naming the command that wrote the files",
+                "scripts/process_gate.py",
+                'as `{_manifest_author(read)}` wrote them")',
+                'as `agentsmith tenant init` wrote them")',
+            ),
+        ),
+    ),
 )
 
 

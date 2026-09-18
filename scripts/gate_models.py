@@ -313,6 +313,23 @@ _ANSWER = re.compile(
 )
 
 
+def pillar_kinds(section: str) -> dict[str, str]:
+    """Each answered pillar's kind — applies, n/a, gap, deviation — read by the
+    same pattern `check_pillars` judges. `unrecognised` for an answer that
+    pattern matches but that is none of those, so it is shown, not dropped."""
+    kinds: dict[str, str] = {}
+    for line in section.splitlines():
+        match = _ANSWER.match(line.strip())
+        if not match:
+            continue
+        verdict = match.group("verdict").strip("* ").rstrip(" —").lower()
+        kind = "deviation" if verdict.startswith("deviation") else (
+            verdict if verdict in ("applies", "n/a", "gap") else "unrecognised")
+        for number in re.findall(r"\d+", match.group("ids")):
+            kinds[f"P{number}"] = kind
+    return kinds
+
+
 def _detail(rest: str) -> str:
     return re.sub(r"^\s*[—–-]+\s*", "", rest).strip()
 

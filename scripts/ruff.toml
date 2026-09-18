@@ -49,6 +49,7 @@ extend-exclude = [
   "security/runners/structured_output.py",
   "security/runners/tool_allowlist.py",
   "security/schemas/risk_register.schema.json",
+  "send_dev_record.py",
   "shadow-eval.py",
   "sync-portal-history.py",
   "sync-ui-feedback.py",

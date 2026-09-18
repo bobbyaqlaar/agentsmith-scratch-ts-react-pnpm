@@ -40,6 +40,7 @@ as fresh as the change — quality still needs a reviewer who is not the builder
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -411,6 +412,31 @@ def kg_problems(files: List[str], review_text: str, read: Reader) -> List[str]:
     return []
 
 
+def record_text(kind: str, value: str, read: Reader, single: bool
+                ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """The text a `Design:` or `Review:` trailer points at, in this commit.
+    -> (record path, file path, text, problem). One resolution for the gate's
+    verdict and for the record `ci --json` writes, so the two cannot disagree
+    about which document a commit named."""
+    design = kind == "Design"
+    path, err = resolve_record(value, DESIGNS_DIR if design else REVIEWS_DIR, single,
+                               DESIGN_ARTIFACT if design else REVIEW_ARTIFACT)
+    file_path, slug = split_record_ref(path or "")
+    if err:
+        return path, file_path, None, err
+    document = read(file_path) if file_path else None
+    if document is None:
+        return path, file_path, None, f"{file_path} does not exist in this commit"
+    if not single:
+        return path, file_path, document, None
+    text = design_section(document, slug or "") if design else review_entries(document, slug or "")
+    if text is None:
+        return path, file_path, None, (
+            f"{file_path} has no '## {ACTIVE_CHANGE}{slug}' section in this commit" if design
+            else f"{file_path} records no passes for {slug} in this commit")
+    return path, file_path, text, None
+
+
 def check_change(
     files: List[str],
     gated_lines: int,
@@ -478,16 +504,9 @@ def check_change(
         errors.append(f"missing 'Design: {design_wanted}' trailer (gated paths: {', '.join(gated[:5])}"
                       f"{' …' if len(gated) > 5 else ''})")
     elif not na("Design", design_value):
-        path, err = resolve_record(design_value, DESIGNS_DIR, single, DESIGN_ARTIFACT)
-        file_path, slug = split_record_ref(path or "")
-        document = read(file_path) if file_path else None
-        text = design_section(document or "", slug or "") if (single and document is not None) else document
-        if err:
-            errors.append(f"Design: {err}")
-        elif document is None:
-            errors.append(f"Design: {file_path} does not exist in this commit")
-        elif text is None:
-            errors.append(f"Design: {file_path} has no '## {ACTIVE_CHANGE}{slug}' section in this commit")
+        path, _file, text, problem = record_text("Design", design_value, read, single)
+        if problem:
+            errors.append(f"Design: {problem}")
         else:
             design_errors = check_design(text, known_slugs, levers_shown, registry, approvals, path,
                                          config.registry_declared,
@@ -516,16 +535,9 @@ def check_change(
     if review_value is None:
         errors.append(f"missing 'Review: {review_wanted}' trailer")
     elif not na("Review", review_value):
-        path, err = resolve_record(review_value, REVIEWS_DIR, single, REVIEW_ARTIFACT)
-        file_path, slug = split_record_ref(path or "")
-        document = read(file_path) if file_path else None
-        text = review_entries(document or "", slug or "") if (single and document is not None) else document
-        if err:
-            errors.append(f"Review: {err}")
-        elif document is None:
-            errors.append(f"Review: {file_path} does not exist in this commit")
-        elif text is None:
-            errors.append(f"Review: {file_path} records no passes for {slug} in this commit")
+        path, file_path, text, problem = record_text("Review", review_value, read, single)
+        if problem:
+            errors.append(f"Review: {problem}")
         else:
             errors.extend(f"Review: {path} {e}" for e in check_review(text, registry, config.registry_declared))
             if config.kg_mode in ("report", "enforce"):
@@ -983,13 +995,151 @@ def _report(lines: List[str], annotations: List[str]) -> None:
 
 
 
+# ── The record `ci --json` writes (portal phase 1) ───────────────────────────
+#
+# What the gate decided about each commit, for the portal's Dev workspace. It is
+# written by the run that decided, from the same parse, so the portal is told a
+# verdict and never re-derives one (.agent-rfc/designs/portal-phase1.md).
+
+DEV_RECORD_SCHEMA = 1
+# Every verdict a record can carry. The portal refuses any other
+# (portal/lib/devIngest.ts DEV_VERDICTS, and a CHECK on dev_commits.verdict);
+# scripts/test/test_dev_record.py pins the three together.
+DEV_VERDICTS = ("passed", "failed", "passed_with_notes", "not_gated", "before_adoption")
+
+
+def design_summary(text: str, registry: Optional["gm.Registry"] = None) -> Dict[str, object]:
+    """Title, status, scope, each pillar's kind, and each deviation by id,
+    text hash and approval — what the Dev workspace shows of a design."""
+    meta, body = front_matter(text)
+    title = next((line[2:].strip() for line in body.splitlines() if line.startswith("# ")), None)
+    pillars = gm.pillar_kinds(_section(body, "Pillars") or "")
+    deviations, _ = gm.parse_deviations(_section(body, "Deviations") or "none")
+    scope = meta.get("scope")
+    return {
+        "title": title,
+        "status": meta.get("status"),
+        "scope": [str(g) for g in scope] if isinstance(scope, list) else [],
+        "pillars": pillars,
+        "deviations": [
+            {"id": d.id, "text_sha256": hashlib.sha256(d.text.encode("utf-8")).hexdigest(),
+             "approval_id": d.approval_id}
+            for d in deviations
+        ],
+    }
+
+
+def review_summary(text: str, registry: Optional["gm.Registry"] = None) -> Dict[str, object]:
+    """Each pass's findings, whether the sign-off is complete, the KG query.
+    `signed_off` is None when there is no registry to judge the sign-off by."""
+    kg = _KG_QUERY.search(text)
+    return {
+        "passes": [{"n": int(n), "findings": int(k)} for n, k in _PASS.findall(text)],
+        "signed_off": (not gm.check_signoff(text, registry)) if registry is not None else None,
+        "kg_query": kg.group(1) if kg else None,
+    }
+
+
+def describe_records(message: str, read: Reader, config: "Config"
+                     ) -> Tuple[Optional[Dict[str, object]], Optional[Dict[str, object]]]:
+    """-> (design, review) as the commit names them. None when it names none;
+    `resolved: false` with the reason when the name leads nowhere — a record
+    that vanished would read as a commit that never named one."""
+    registry, _ = config.load_registry(read)
+    single = config.records_mode == "single"
+    described: List[Optional[Dict[str, object]]] = []
+    for kind, summarise in (("Design", design_summary), ("Review", review_summary)):
+        value = trailer(message, kind)
+        if value is None:
+            described.append(None)
+            continue
+        if re.match(r"^n/?a\b", value, re.I):
+            described.append({"ref": value, "path": None, "resolved": False, "reason": "n/a"})
+            continue
+        path, _file, text, problem = record_text(kind, value, read, single)
+        if problem or text is None:
+            described.append({"ref": value, "path": path, "resolved": False, "reason": problem})
+            continue
+        described.append({"ref": value, "path": path, "resolved": True, **summarise(text, registry)})
+    return described[0], described[1]
+
+
+def _commit_record(root: Path, commit: str, message: str, verdict: str, errors: List[str],
+                   notes: List[str], gated: bool, adopted: bool, config: Optional["Config"],
+                   read: Reader) -> Dict[str, object]:
+    meta = git("log", "-1", "--format=%P%n%an%n%ae%n%cI", commit, cwd=root).split("\n")
+    parents = meta[0].split() if meta and meta[0] else []
+    design, review = describe_records(message, read, config) if config is not None else (None, None)
+    return {
+        "commit": commit,
+        "parent": parents[0] if parents else None,
+        "subject": message.splitlines()[0] if message else "",
+        "author_name": meta[1] if len(meta) > 1 else "",
+        "author_email": meta[2] if len(meta) > 2 else "",
+        "committed_at": meta[3] if len(meta) > 3 else "",
+        "adopted": adopted,
+        "gated": gated,
+        "verdict": verdict,
+        "errors": errors,
+        "notes": notes,
+        "repairs": repairs_claimed(root, commit),
+        "design": design,
+        "review": review,
+    }
+
+
+def designs_at(root: Path, rev: str, config: "Config") -> List[Dict[str, object]]:
+    """Every design document as it stands at `rev`, summarised like a commit's.
+
+    A design is usually closed by a records commit that does not cite it, so
+    the last commit that DID cite it still says `active`. Status, and which
+    deviations are approved, are read from here — the head — not from the
+    history of citations."""
+    read = _reader_at(root, rev)
+    found: List[Dict[str, object]] = []
+    if config.records_mode == "single":
+        document = read(DESIGN_ARTIFACT) or ""
+        for slug in _slug_sections(document, ACTIVE_CHANGE):
+            text = design_section(document, slug)
+            if text is not None:
+                found.append({"path": f"{DESIGN_ARTIFACT}#{slug}", **design_summary(text)})
+        return found
+    listed = git("ls-tree", "-r", "--name-only", rev, "--", f"{DESIGNS_DIR}/", cwd=root, check=False)
+    for path in sorted(p for p in listed.splitlines() if p.endswith(".md")):
+        text = read(path)
+        if text is not None:
+            found.append({"path": path, **design_summary(text)})
+    return found
+
+
+def _record_commit(records: Optional[List[Dict[str, object]]], about: Optional[tuple], verdict: str,
+                   errors: List[str], notes: List[str], gated: bool, adopted: bool = True) -> None:
+    if records is None or about is None:
+        return
+    root, commit, message, config, read = about
+    if verdict not in DEV_VERDICTS:  # a verdict the portal would refuse is a bug here, not there
+        raise ValueError(f"not a record verdict: {verdict}")
+    records.append(_commit_record(root, commit, message, verdict, errors, notes, gated, adopted, config, read))
+
+
+def _verdict(errors: List[str], notes: List[str], checked: bool) -> str:
+    """`checked` is whether the commit met the gated-path rules. A commit that
+    did not can still carry findings — its pointers are read either way — and
+    those are the one thing worth showing about it."""
+    if errors:
+        return "failed"
+    if notes:
+        return "passed_with_notes"
+    return "passed" if checked else "not_gated"
+
+
 # ── Checking commits ─────────────────────────────────────────────────────────
 
 Failures = List[Tuple[str, str, List[str]]]
 
 
-def check_commits(root: Path, commits: List[str]) -> Tuple[Failures, List[Tuple[str, str, str]],
-                                                           List[Tuple[str, str]], set, int]:
+def check_commits(root: Path, commits: List[str], records: Optional[List[Dict[str, object]]] = None
+                  ) -> Tuple[Failures, List[Tuple[str, str, str]], List[Tuple[str, str]], set, int]:
     """Every commit against the config and records it carries.
 
     One implementation for `ci` (a pushed range) and `sweep` (whatever reached
@@ -997,6 +1147,9 @@ def check_commits(root: Path, commits: List[str]) -> Tuple[Failures, List[Tuple[
     question differently, and the sweep exists precisely to catch what the other
     layers missed.
     -> (failures, escapes, unadopted, files seen, commits touching gated paths)
+
+    `records`, when given, receives one record per commit carrying the verdict
+    reached here — the list `ci --json` writes.
     """
     failures: Failures = []
     escapes: List[Tuple[str, str, str]] = []
@@ -1013,14 +1166,20 @@ def check_commits(root: Path, commits: List[str]) -> Tuple[Failures, List[Tuple[
         # Each commit is judged by the config it carries: a commit from before
         # adoption is listed, not failed.
         config, problems = parse_config(read(CONFIG))
+        # What the record needs besides the verdict; None when not collecting.
+        about = (root, commit, message, config if not problems else None, read) if records is not None else None
+
         if problems:
             failures.append((commit, subject, problems))
+            _record_commit(records, about, "failed", problems, [], gated=False)
             continue
         if config is None:
             unadopted.append((commit, subject))
+            _record_commit(records, about, "before_adoption", [], [], gated=False, adopted=False)
             continue
         gated = any(config.is_gated(f) for f in files)
         if not gated and config.artifacts_mode not in ("report", "enforce"):
+            _record_commit(records, about, "not_gated", [], [], gated=False)
             continue
         added = _added_lines(git("show", "--format=", "-U0", "--root", commit, cwd=root, check=False))
         if not gated:
@@ -1031,6 +1190,7 @@ def check_commits(root: Path, commits: List[str]) -> Tuple[Failures, List[Tuple[
             if errors:
                 failures.append((commit, subject, errors))
             escapes.extend((commit, subject, n) for n in notes)
+            _record_commit(records, about, _verdict(errors, notes, checked=False), errors, notes, gated=False)
             continue
         gated_commits += 1
         lines = _gated_lines(git("diff-tree", "--no-commit-id", "--numstat", "-r", "--root", commit, cwd=root), config)
@@ -1041,11 +1201,12 @@ def check_commits(root: Path, commits: List[str]) -> Tuple[Failures, List[Tuple[
         if errors:
             failures.append((commit, subject, errors))
         escapes.extend((commit, subject, n) for n in notes)
+        _record_commit(records, about, _verdict(errors, notes, checked=True), errors, notes, gated=True)
 
     return failures, escapes, unadopted, range_files, gated_commits
 
 
-def cmd_ci(base: str, head: str) -> int:
+def cmd_ci(base: str, head: str, json_path: Optional[str] = None) -> int:
     root = repo_root()
     head_config, head_problems = parse_config(_reader_at(root, head)(CONFIG))
     if head_config is None or head_problems:
@@ -1057,7 +1218,25 @@ def cmd_ci(base: str, head: str) -> int:
         return 1
 
     commits, caveat = _range_commits(root, base, head)
-    failures, escapes, unadopted, range_files, gated_commits = check_commits(root, commits)
+    records: Optional[List[Dict[str, object]]] = [] if json_path else None
+    failures, escapes, unadopted, range_files, gated_commits = check_commits(root, commits, records)
+    if json_path:
+        # Written whatever the verdict: a failed range is exactly what the Dev
+        # workspace has to show.
+        head_sha = git("rev-parse", "--verify", f"{head}^{{commit}}", cwd=root).strip()
+        document = {
+            "schema": DEV_RECORD_SCHEMA,
+            "generated_at": _now(),
+            "base": base or None,
+            "head": head_sha,
+            "range_caveat": caveat,
+            "commits": records,
+            "designs": designs_at(root, head_sha, head_config),
+        }
+        run = [os.environ.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID")]
+        if all(run):
+            document["ci_run_url"] = f"{run[0]}/{run[1]}/actions/runs/{run[2]}"
+        Path(json_path).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
     changelog_error = None
     needing = sorted(f for f in range_files if head_config.needs_changelog(f))
@@ -1662,6 +1841,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ci = sub.add_parser("ci")
     ci.add_argument("--base", default="")
     ci.add_argument("--head", default="HEAD")
+    ci.add_argument("--json", dest="json_path", default=None,
+                    help="also write what was decided about each commit to this file (the portal's Dev ingest)")
     args = parser.parse_args(argv)
 
     if args.command == "artifacts":
@@ -1693,7 +1874,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _traced("sweep", repo_root(), lambda: cmd_sweep(args.report))
     if args.command == "commit-msg":
         return _traced("commit-msg", repo_root(), lambda: cmd_commit_msg(args.message_file, amend=args.amend))
-    return _traced("ci", repo_root(), lambda: cmd_ci(args.base, args.head))
+    return _traced("ci", repo_root(), lambda: cmd_ci(args.base, args.head, args.json_path))
 
 
 if __name__ == "__main__":

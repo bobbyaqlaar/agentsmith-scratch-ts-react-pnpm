@@ -408,23 +408,23 @@ def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Option
         if (root / f).is_file() and hashlib.sha256((root / f).read_bytes()).hexdigest() == digest})
     records: list[str] = []
     registry_path = framework / "templates" / "governance.json"
-    design_rel, design = design, root / design
+    design_path = root / design
     if not registry_path.is_file():
         # An install from before the registry existed: the gate it runs cannot
         # read its rules either. Say so rather than write a design that answers
         # pillars nobody can list.
-        print(f"  ! {design_rel} not written: {registry_path} is missing — re-run "
+        print(f"  ! {design} not written: {registry_path} is missing — re-run "
               "install-ai-stack.sh from a current AgentSmith checkout", file=sys.stderr)
-    elif design.exists() and not force:
-        print(f"  = {design_rel} exists — left untouched")
+    elif design_path.exists() and not force:
+        print(f"  = {design} exists — left untouched")
     else:
         from runtime import architectures
 
-        design.parent.mkdir(parents=True, exist_ok=True)
+        design_path.parent.mkdir(parents=True, exist_ok=True)
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
-        design.write_text(architectures.render_scaffold_design(
+        design_path.write_text(architectures.render_scaffold_design(
             tenant_id, stack, style, agentic, files, registry.get("pillars", []), adopted=adopted), encoding="utf-8")
-        records.append(design_rel)
+        records.append(design)
     command = "agentsmith tenant adopt" if adopted else "agentsmith tenant init"
     manifest = {
         "_about": f"What `{command}` wrote, by SHA-256. The review of the commit that arms the gates may be "
@@ -465,7 +465,7 @@ def _process_gates_config(stack: str, session_start: Optional[str] = None,
     graph it has not built, and the first thing anyone does then is take the
     gates out. Each is turned on deliberately.
     """
-    config = {
+    config: dict[str, object] = {
         "_about": "What the process gates cover here — AgentSmith docs/process-gates.md. "
                   "This file is gated itself, so switching a gate off takes a design and a review.",
         "gated": gated or [*GATED_BY_STACK.get(stack, GATED_BY_STACK["python-fastapi"]), *ALWAYS_GATED],

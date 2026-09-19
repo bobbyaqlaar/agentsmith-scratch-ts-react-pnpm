@@ -31,6 +31,7 @@ still fails a test; do not delete it because it stopped matching.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import signal
 import subprocess
 import sys
@@ -60,11 +61,18 @@ class Mutation:
 
 @dataclass(frozen=True)
 class Suite:
-    """A group of mutations and the tests that must notice them."""
+    """A group of mutations and the tests that must notice them.
+
+    `watch`, when set, lists globs of the files whose change could break what
+    the suite defends; `--changed-since` then skips the suite when none of them
+    changed (.agent-rfc/designs/mutation-ci-scope.md). A suite without `watch`
+    runs every time. Only a suite slow enough to matter declares one.
+    """
 
     name: str
     tests: tuple[str, ...]
     mutations: tuple[Mutation, ...]
+    watch: tuple[str, ...] = ()
 
 
 CATALOGUE: tuple[Suite, ...] = (
@@ -608,6 +616,9 @@ CATALOGUE: tuple[Suite, ...] = (
     ),
     # .agent-rfc/designs/tenant-adopt.md — an existing repository under the
     # gates, the hooks it ran kept behind them, and `tenant init` vendoring.
+    # Its tests build real repositories through real hooks, about twelve
+    # minutes in CI, so it runs when what it protects changes
+    # (.agent-rfc/designs/mutation-ci-scope.md).
     Suite(
         name="tenant_adopt",
         tests=(
@@ -615,6 +626,25 @@ CATALOGUE: tuple[Suite, ...] = (
             "scripts/test/test_tenant_adopt.py",
             "scripts/test/test_scaffold_review.py",
             "scripts/test/test_installed_runtime_tenant.py",
+        ),
+        watch=(
+            ".githooks/*",
+            "hooks/*",
+            "runtime/adopt.py",
+            "runtime/cli.py",
+            "runtime/architectures.py",
+            "templates/architectures.yaml",
+            "templates/governance.json",
+            "scripts/process_gate.py",
+            "scripts/gate_*.py",
+            "scripts/generate-ide-config.py",
+            "workflow-templates/agentsmith-gates.yml",
+            "scripts/test/test_hook_chain.py",
+            "scripts/test/test_tenant_adopt.py",
+            "scripts/test/test_scaffold_review.py",
+            "scripts/test/test_installed_runtime_tenant.py",
+            "scripts/test/test_scratch_tenants.py",
+            "scripts/mutation_check.py",
         ),
         mutations=(
             Mutation(
@@ -752,6 +782,10 @@ def _dirty_catalogue_files(suites: tuple[Suite, ...]) -> list[str]:
     progress, and it is what surfaces the residue of a previous crashed run.
     """
     paths = sorted({m.path for suite in suites for m in suite.mutations})
+    if not paths:
+        # `git status -- ` with no paths reports the whole repository, which a
+        # run that mutates nothing (every suite skipped) has no reason to refuse.
+        return []
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain", "--", *paths],
@@ -863,6 +897,47 @@ def run_suite(suite: Suite) -> list[str]:
     return problems
 
 
+_NO_COMMIT = "0" * 40
+
+
+def changed_files(ref: str, cwd: Path = REPO) -> "set[str] | None":
+    """The files changed since `ref` — committed, uncommitted or new — or None when that cannot be
+    told: no ref, the all-zeros SHA GitHub sends for a new branch, or a commit
+    this clone does not have (a force-push, a shallow checkout). None is
+    "unknown", never "nothing changed"."""
+    if not ref or ref == _NO_COMMIT:
+        return None
+    known = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"],
+                           capture_output=True, text=True, check=False)
+    if known.returncode != 0:
+        return None
+    # `ref` against the working tree, not HEAD, plus untracked files: locally
+    # the edit in progress is the change. In CI the tree is clean, so this is
+    # ref..HEAD there.
+    diff = subprocess.run(["git", "-C", str(cwd), "diff", "--name-only", "--no-renames", ref],
+                          capture_output=True, text=True, check=False)
+    new = subprocess.run(["git", "-C", str(cwd), "ls-files", "--others", "--exclude-standard"],
+                         capture_output=True, text=True, check=False)
+    if diff.returncode != 0 or new.returncode != 0:
+        return None
+    return {line for line in (diff.stdout + new.stdout).splitlines() if line}
+
+
+def select_suites(suites: "tuple[Suite, ...]", changed: "set[str] | None"
+                  ) -> "tuple[list[Suite], list[tuple[Suite, str]]]":
+    """-> (suites to run, (suite, why) skipped). A suite without `watch` always
+    runs, and so does every suite when `changed` is None (unknown)."""
+    run: list[Suite] = []
+    skipped: list[tuple[Suite, str]] = []
+    for suite in suites:
+        if changed is None or not suite.watch or any(
+                fnmatch.fnmatchcase(path, glob) for path in changed for glob in suite.watch):
+            run.append(suite)
+        else:
+            skipped.append((suite, "none of the files it watches changed"))
+    return run, skipped
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     parser.add_argument("suites", nargs="*", help="suite names (default: all)")
@@ -873,13 +948,14 @@ def main() -> int:
         help="run over uncommitted changes (the normal case while fixing something); "
         "pristine copies are saved beside the repo first",
     )
+    parser.add_argument(
+        "--changed-since",
+        metavar="REF",
+        default=None,
+        help="skip a suite that declares `watch` when none of its files changed between REF and HEAD; "
+        "a REF this clone cannot use runs every suite",
+    )
     args = parser.parse_args()
-
-    if args.list:
-        for suite in CATALOGUE:
-            print(f"{suite.name:22} {len(suite.mutations):2} mutations  "
-                  f"{len(suite.tests)} test file(s)")
-        return 0
 
     selected = CATALOGUE
     if args.suites:
@@ -890,6 +966,23 @@ def main() -> int:
             print(f"known: {', '.join(sorted(known))}", file=sys.stderr)
             return 1
         selected = tuple(s for s in CATALOGUE if s.name in set(args.suites))
+
+    skipped: list[tuple[Suite, str]] = []
+    if args.changed_since is not None:
+        changed = changed_files(args.changed_since)
+        if changed is None:
+            print(f"ℹ️  cannot tell what changed since {args.changed_since or '(no base)'!s} — "
+                  "running every suite")
+        run, skipped = select_suites(selected, changed)
+        selected = tuple(run)
+        for suite, why in skipped:
+            print(f"⏭️  {suite.name} skipped — {why} since {args.changed_since}")
+
+    if args.list:
+        for suite in selected:
+            print(f"{suite.name:22} {len(suite.mutations):2} mutations  "
+                  f"{len(suite.tests)} test file(s)")
+        return 0
 
     dirty = _dirty_catalogue_files(selected)
     if dirty and args.allow_dirty:
@@ -935,7 +1028,11 @@ def main() -> int:
         for problem in problems:
             print(f"  {problem}")
         return 1
-    print(f"✅  {total} mutations, all caught")
+    note = f"; {len(skipped)} suite(s) skipped, named above" if skipped else ""
+    if not selected:
+        print(f"ℹ️  no suite ran{note}")
+        return 0
+    print(f"✅  {total} mutations, all caught{note}")
     return 0
 
 

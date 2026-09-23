@@ -756,10 +756,123 @@ CATALOGUE: tuple[Suite, ...] = (
                 "            earlier = {}",
             ),
             Mutation(
+                "adopt gates the vendored framework code it finds",
+                "runtime/adopt.py",
+                "and head not in vendored:",
+                "and head not in ():",
+            ),
+            Mutation(
+                "adopt writes over a repository even when the gates cannot be armed",
+                "runtime/adopt.py",
+                "    missing = missing_gate_hooks(framework)\n    if missing:",
+                "    missing = []\n    if missing:",
+            ),
+            Mutation(
                 "the gate's note stops naming the command that wrote the files",
                 "scripts/process_gate.py",
                 'as `{_manifest_author(read)}` wrote them")',
                 'as `agentsmith tenant init` wrote them")',
+            ),
+        ),
+    ),
+    # .agent-rfc/designs/installed-architectures.md — what an installed machine
+    # (not a checkout) must carry for `tenant init` / `tenant adopt` to work.
+    Suite(
+        name="installed_machine",
+        tests=(
+            "scripts/test/test_installer_templates.py",
+            "runtime/test/test_cli.py",
+        ),
+        mutations=(
+            Mutation(
+                "the installer stops shipping the gate's hooks — every tenant is armed at an empty directory",
+                "install-ai-stack.sh",
+                'cp -r "$INSTALLER_DIR/.githooks/." "$GITHOOKS_DIR/"',
+                'true "$INSTALLER_DIR"',
+            ),
+            Mutation(
+                "the installer stops shipping the architecture catalogue",
+                "install-ai-stack.sh",
+                'cp "$INSTALLER_DIR/templates/architectures.yaml" "$FRAMEWORK_DIR/templates/architectures.yaml"',
+                "true",
+            ),
+            Mutation(
+                "an install with no gate hooks arms core.hooksPath anyway",
+                "runtime/cli.py",
+                "    missing_gate_hooks(framework, raising=True)",
+                "    missing_gate_hooks(framework)",
+            ),
+            Mutation(
+                "the release stops shipping the gate's hooks",
+                ".github/workflows/release.yml",
+                "tar -czf dist/githooks.tar.gz -C .githooks .",
+                "true",
+            ),
+        ),
+    ),
+
+    # .agent-rfc/designs/gate-port.md — the contract a provider satisfies, and
+    # the suite that proves it. Fast: the fixture is five events in a temp repo.
+    Suite(
+        name="gate_contract",
+        tests=(
+            "scripts/test/test_gate_contract.py",
+            "runtime/test/test_conformance.py",
+            "scripts/test/test_provider_resolution.py",
+            "scripts/test/test_tenant_adopt.py",
+        ),
+        mutations=(
+            Mutation(
+                "the adapter goes back to saying `allow` by staying silent",
+                "runtime/cli.py",
+                '    if done.returncode == 0 and not done.stdout.strip():\n'
+                '        print(json.dumps({"decision": "allow", "text": ""}))\n'
+                "        return 0\n",
+                "",
+            ),
+            Mutation(
+                "the neutral profile answers in an IDE's dialect",
+                "scripts/gate_ides.py",
+                "    return gm.Decision(decision=\"block\" if decision == \"block\" else decision, "
+                "text=text).model_dump_json()",
+                "    return _claude_render(decision, text, repeat)",
+            ),
+            Mutation(
+                "a refusal with no reason passes conformance",
+                "runtime/conformance.py",
+                '    if decision in ("deny", "block") and not text.strip():',
+                "    if False:",
+            ),
+            Mutation(
+                "a provider that printed no decision is taken as having answered — a provider too old "
+                "for the event leaves the repository ungated",
+                ".githooks/process-gate",
+                '      if [ -n "$answer" ]; then',
+                "      if true; then",
+            ),
+            Mutation(
+                "a repository that declared itself ungoverned falls back to the framework anyway",
+                ".githooks/process-gate",
+                '    if [ "$provider" = "none" ]; then',
+                "    if false; then",
+            ),
+            Mutation(
+                "the declaration is ignored and the framework's own paths always win",
+                ".githooks/process-gate",
+                '    provider="${GOVERNANCE_PROVIDER:-$(declared_gate)}"',
+                '    provider=""',
+            ),
+            Mutation(
+                "adopt stops declaring who governs the repository",
+                "runtime/adopt.py",
+                "    if not (root / PROVIDERS).exists():\n        put(PROVIDERS, providers_declaration())",
+                "    pass",
+            ),
+            Mutation(
+                "a provider that cannot run is scored as a wrong answer",
+                "runtime/conformance.py",
+                "    if code == CANNOT_RUN:",
+                "    if False:",
             ),
         ),
     ),

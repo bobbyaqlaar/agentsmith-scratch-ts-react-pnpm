@@ -1907,7 +1907,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         sub.add_parser(name)
     for name in ("session-start", "pre-edit", "stop"):
         hook = sub.add_parser(name)
-        hook.add_argument("--ide", default=None, choices=gi.IDES,
+        # `neutral` is contract/gate/v1's profile, not an IDE: a tenant that
+        # named a provider, or another platform's adapter, speaks it.
+        hook.add_argument("--ide", default=None, choices=(*gi.IDES, gi.NEUTRAL),
                           help="which IDE is asking (default: $AGENTSMITH_IDE, then claude)")
     sweep_cmd = sub.add_parser("sweep")
     sweep_cmd.add_argument("--report", action="store_true",

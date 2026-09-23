@@ -28,6 +28,7 @@ __all__ = [
     "Approval",
     "Artifact",
     "Artifacts",
+    "Decision",
     "Deviation",
     "Extends",
     "GateEvent",
@@ -110,6 +111,21 @@ class GateEvent(_Frozen):
     command: str | None = None
     cwd: str | None = None
     stop_active: bool = False
+
+
+class Decision(_Frozen):
+    """The gate's answer, in the neutral profile of the gate contract
+    (contract/gate/v1/). `gate_ides` renders the same four answers into each
+    IDE's dialect; this is the shape a provider outside this repository writes.
+
+    allow    the edit or the turn may proceed
+    deny     it may not, and `text` says why
+    block    the turn is refused (a stop gate's `deny`, which IDEs spell apart)
+    context  not a refusal: `text` is what the session should start knowing
+    """
+
+    decision: Literal["allow", "deny", "block", "context"]
+    text: str = ""
 
 
 class Ide(_Frozen):

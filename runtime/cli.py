@@ -495,6 +495,20 @@ def _framework_dir() -> Optional[Path]:
 GATE_HOOKS = ("process-gate", "commit-msg", "pre-commit", "pre-push", "chain")
 
 
+def missing_gate_hooks(framework: Path, raising: bool = False) -> list[str]:
+    """The gate hooks this framework cannot supply. `raising` turns a non-empty
+    answer into the error the caller should not write past
+    (.agent-rfc/designs/installed-architectures.md)."""
+    missing = [hook for hook in GATE_HOOKS if not (framework / ".githooks" / hook).is_file()]
+    if missing and raising:
+        raise FileNotFoundError(
+            f"{framework}/.githooks/ has no {', '.join(missing)} — the gates cannot be armed from this "
+            "install. Re-run install-ai-stack.sh from a current AgentSmith checkout, or point "
+            "$AGENTSMITH_DIR at one."
+        )
+    return missing
+
+
 def install_gate_hooks(root: Path, framework: Path, prior: Optional[Path] = None, force: bool = False,
                        provisioning: bool = True) -> list[str]:
     """The gate's hooks, copied in and armed; `prior`'s hooks chained behind
@@ -502,6 +516,7 @@ def install_gate_hooks(root: Path, framework: Path, prior: Optional[Path] = None
     machine's post-checkout and post-commit). Returns the paths written."""
     import subprocess as sp
 
+    missing_gate_hooks(framework, raising=True)
     written = []
     for hook in GATE_HOOKS:
         source = framework / ".githooks" / hook
@@ -511,7 +526,10 @@ def install_gate_hooks(root: Path, framework: Path, prior: Optional[Path] = None
             (root / ".githooks" / hook).chmod(0o755)
             written.append(f".githooks/{hook}")
     # Armed, not merely present: a hook family nobody points git at is the
-    # `implemented-not-invoked` failure this whole programme is about.
+    # `implemented-not-invoked` failure this whole programme is about. Armed only
+    # once the hooks are there: a hooks path overrides .git/hooks, so arming an
+    # empty directory leaves a repository with no hooks at all — which is what a
+    # machine install without .githooks/ used to do, silently.
     sp.run(["git", "-C", str(root), "config", "core.hooksPath", ".githooks"], check=False)
     if prior is not None:
         from runtime.adopt import chain_hooks
@@ -653,7 +671,9 @@ def _cmd_tenant_init(args: argparse.Namespace) -> int:
     except FrameworkRootError as exc:
         print(f"agentsmith: refusing to scaffold here.\n{exc}", file=sys.stderr)
         return 3
-    except ValueError as exc:
+    except (ValueError, FileNotFoundError) as exc:
+        # FileNotFoundError: a machine install missing a template the catalogue
+        # needs. It names the file and the fix; a traceback would not.
         print(f"agentsmith: {exc}", file=sys.stderr)
         return 2
     for path in written:
@@ -710,7 +730,9 @@ def _cmd_tenant_adopt(args: argparse.Namespace) -> int:
     try:
         plan = plan_adoption(args.tenant_id, root, stack=args.stack, architecture=args.architecture,
                              agentic=args.agentic, gate=args.gate, framework_ref=args.framework_ref)
-    except ValueError as exc:  # AdoptError, an unknown style, a bad tenant id
+    except (ValueError, FileNotFoundError) as exc:
+        # AdoptError, an unknown style, a bad tenant id, or a machine install
+        # missing a template — each says what to do; none is a traceback.
         print(f"agentsmith: {exc}", file=sys.stderr)
         return 2
     print(describe(plan))
@@ -742,6 +764,62 @@ def _cmd_tenant_adopt(args: argparse.Namespace) -> int:
         "The gates workflow needs the AGENTSMITH_READ_TOKEN repository secret to check out AgentSmith."
     )
     return 0
+
+
+def _cmd_gate(args: argparse.Namespace) -> int:
+    """`agentsmith gate <event>` — AgentSmith as a gate provider
+    (contract/gate/v1/protocol.md). The neutral profile over the same decision
+    path every IDE dialect goes through: one implementation of what a rule means.
+
+    Exit 3 — the contract's "this provider cannot run here" — when the gate
+    itself is not on this machine, so a caller can try the next provider."""
+    import subprocess as sp
+
+    framework = _framework_dir()
+    gate = None
+    for candidate in (Path.cwd() / "scripts", framework / "scripts" if framework else None):
+        if candidate is not None and (candidate / "process_gate.py").is_file():
+            gate = candidate / "process_gate.py"
+            break
+    if gate is None:
+        print("agentsmith gate: no process_gate.py in this repo, $AGENTSMITH_DIR or ~/.agent-framework — "
+              "run install-ai-stack.sh", file=sys.stderr)
+        return 3
+    # The dialect the caller asked for, or the contract's neutral profile. A
+    # provider that serves IDE hooks accepts --ide and translates; conformance
+    # pins the neutral profile (contract/gate/v1/protocol.md).
+    done = sp.run([sys.executable, str(gate), args.event, "--ide", args.ide or "neutral"],
+                  input=sys.stdin.read() if not sys.stdin.isatty() else "{}",
+                  capture_output=True, text=True, check=False)
+    sys.stderr.write(done.stderr)
+    if done.returncode == 3:
+        return 3
+    # The hooks say "allow" by staying silent, which a caller cannot tell from a
+    # crash that printed nothing. The contract's profile is explicit, so the
+    # adapter says it (contract/gate/v1/protocol.md).
+    if done.returncode == 0 and not done.stdout.strip():
+        print(json.dumps({"decision": "allow", "text": ""}))
+        return 0
+    sys.stdout.write(done.stdout)
+    return done.returncode
+
+
+def _cmd_conformance(args: argparse.Namespace) -> int:
+    """`agentsmith conformance --provider "<command>"` — does that command
+    satisfy the gate contract? Run it against another platform's adapter, or
+    against this one (scripts/test/test_gate_contract.py does)."""
+    import tempfile
+
+    from runtime.conformance import run
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            report = run(args.provider, Path(tmp) / "fixture")
+        except FileNotFoundError as exc:
+            print(f"agentsmith: {exc}", file=sys.stderr)
+            return 2
+    print(report.render())
+    return 0 if report.passed else 1
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -968,6 +1046,17 @@ def build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--root", default=None, help="target repo (default: cwd)")
     adopt.add_argument("--yes", action="store_true", help="adopt without asking (required off a terminal)")
     adopt.set_defaults(func=_cmd_tenant_adopt)
+
+    gate = sub.add_parser("gate", help="answer a gate event (contract/gate/v1 — the neutral profile)")
+    gate.add_argument("event", choices=("session-start", "pre-edit", "stop"))
+    gate.add_argument("--ide", default=None,
+                      help="the dialect the payload is in (default: the contract's neutral profile)")
+    gate.set_defaults(func=_cmd_gate)
+
+    conformance = sub.add_parser("conformance", help="does a command satisfy the gate contract?")
+    conformance.add_argument("--provider", required=True, metavar="COMMAND",
+                             help='the provider to test, e.g. "agentsmith gate"')
+    conformance.set_defaults(func=_cmd_conformance)
 
     promote_tenant = tenant.add_parser("promote", help="gate on staging evals, then open the develop → main PR")
     promote_tenant.add_argument("tenant_id")

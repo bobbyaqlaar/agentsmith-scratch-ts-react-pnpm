@@ -33,6 +33,10 @@ from typing import Optional, Sequence
 from runtime.cli import GATE_HOOKS
 
 ADOPTION_DESIGN = ".agent-rfc/designs/adoption.md"
+PROVIDERS = ".agenticframework/providers.json"
+# The contract version a repository adopted today speaks, and this framework's
+# own major as the range it expects (contract/gate/v1/protocol.md).
+GATE_CONTRACT = 1
 GATES_WORKFLOW = ".github/workflows/agentsmith-gates.yml"
 
 # Client-side hooks git runs that a stub may stand in for. A known list, so a
@@ -68,6 +72,11 @@ SOURCE_EXTENSIONS = {
 # Top-level directories that hold source files but are not this repository's code.
 _NOT_CODE = frozenset({"node_modules", "vendor", "dist", "build", "docs", "venv", "site-packages", "third_party"})
 _TEST_DIRS = frozenset({"test", "tests", "spec", "__tests__", "e2e"})
+# A directory holding AgentSmith's own code, copied in by hooks/post-checkout —
+# the markers the hook itself keys on. It is the framework's, not the
+# repository's: gated, the next re-vendoring would need a design and a review of
+# framework code (.agent-rfc/designs/installed-architectures.md).
+VENDORED_MARKERS = {"scripts": "run-security-checks.py", "runtime": "llm_gateway.py"}
 
 
 class AdoptError(ValueError):
@@ -175,9 +184,16 @@ def _detect_stack(root: Path) -> str:
                      "Pipfile, setup.py or go.mod) — pass --stack")
 
 
+def vendored_dirs(root: Path) -> list[str]:
+    """Top-level directories that hold vendored AgentSmith code, by its own markers."""
+    return sorted(name for name, marker in VENDORED_MARKERS.items() if (root / name / marker).is_file())
+
+
 def _detect_code(root: Path, stack: str) -> tuple[list[str], Optional[str]]:
-    """(gated globs, the source root for docs/DESIGN.md) from what git tracks."""
+    """(gated globs, the source root for docs/DESIGN.md) from what git tracks.
+    Vendored framework directories are left out (`vendored_dirs`)."""
     extensions = SOURCE_EXTENSIONS[stack]
+    vendored = set(vendored_dirs(root))
     dirs: set[str] = set()
     root_exts: set[str] = set()
     for path in _git(root, "ls-files").splitlines():
@@ -186,7 +202,7 @@ def _detect_code(root: Path, stack: str) -> tuple[list[str], Optional[str]]:
         head, _, rest = path.partition("/")
         if not rest:
             root_exts.add(Path(path).suffix)
-        elif not head.startswith(".") and head not in _NOT_CODE:
+        elif not head.startswith(".") and head not in _NOT_CODE and head not in vendored:
             dirs.add(head)
     globs = [f"{d}/**" for d in sorted(dirs)] + [f"*{ext}" for ext in sorted(root_exts)]
     code = sorted(d for d in dirs if d not in _TEST_DIRS)
@@ -236,6 +252,17 @@ def plan_adoption(tenant_id: str, root: Path, *, stack: Optional[str] = None, ar
     if not globs:
         raise AdoptError(f"found no tracked {'/'.join(SOURCE_EXTENSIONS[stack])} files to gate — pass --gate GLOB")
 
+    from runtime.cli import _framework_dir, missing_gate_hooks
+
+    framework = _framework_dir()
+    if framework is None:
+        raise AdoptError("AgentSmith's scripts are not in $AGENTSMITH_DIR, ~/.agent-framework or this "
+                         "checkout — run install-ai-stack.sh")
+    missing = missing_gate_hooks(framework)
+    if missing:
+        raise AdoptError(f"{framework}/.githooks/ has no {', '.join(missing)} — the gates cannot be armed "
+                         "from this install, and adopting without them would leave this repository with no "
+                         "hooks at all. Re-run install-ai-stack.sh from a current AgentSmith checkout")
     for name in GATE_HOOKS:
         mine = root / ".githooks" / name
         if mine.exists():
@@ -250,7 +277,8 @@ def plan_adoption(tenant_id: str, root: Path, *, stack: Optional[str] = None, ar
         return present if (root / rel).exists() else "create"
 
     actions = [(".agenticframework/tenant.yaml", fate(".agenticframework/tenant.yaml", "leave")),
-               (".agenticframework/process-gates.json", "create")]
+               (".agenticframework/process-gates.json", "create"),
+               (PROVIDERS, fate(PROVIDERS, "leave"))]
     actions += [(f".githooks/{name}", "create") for name in GATE_HOOKS]
     if plan.prior_hooks is not None:
         actions += [(f".githooks/{name}", "create") for name in stub_names(plan.prior_hooks, provisioning=False)]
@@ -281,6 +309,12 @@ def plan_adoption(tenant_id: str, root: Path, *, stack: Optional[str] = None, ar
                 (ADOPTION_DESIGN, "create"), (".agenticframework/scaffold.json", "create")]
     plan.actions = actions
 
+    vendored = vendored_dirs(root)
+    if vendored:
+        plan.warnings.append(
+            f"{', '.join(name + '/' for name in vendored)} holds vendored AgentSmith code (its own "
+            "post-checkout put it there) and is not gated — gating it would make the next re-vendoring "
+            "need a design and a review of framework code. This repository's own code is gated")
     package = root / "package.json"
     if package.is_file() and "husky" in package.read_text(encoding="utf-8"):
         plan.warnings.append("package.json runs husky, which points core.hooksPath back at .husky on install and "
@@ -329,6 +363,23 @@ def generated_by_agentsmith(text: str) -> bool:
     its own opening lines — before any rules block — say so."""
     head = text.split("<!-- agentsmith:rules:begin", 1)[0].splitlines()[:10]
     return any("Auto-generated" in line and "agent-rules.yaml" in line for line in head)
+
+
+def providers_declaration(command: str = "agentsmith gate") -> str:
+    """Who governs this repository, as `contract/gate/v1/providers.schema.json`
+    describes it. Named rather than implied: the hooks ask the declaration, and
+    another platform's command goes here instead
+    (.agent-rfc/designs/provider-resolution.md)."""
+    from runtime.cli import _default_framework_version
+
+    major = _default_framework_version().split(".")[0]
+    return json.dumps({
+        "_about": "Who governs this repository. The hooks ask this before they ask the framework's own "
+                  "paths; `\"gate\": \"none\"` declares the repository ungoverned. See "
+                  "contract/gate/v1/protocol.md.",
+        "contract": GATE_CONTRACT,
+        "providers": {"gate": {"command": command, "version": f"^{major}"}},
+    }, indent=2) + "\n"
 
 
 def merge_rules_block(existing: str, generated: str) -> str:
@@ -408,6 +459,8 @@ def adopt(plan: Plan) -> list[str]:
         put(".agenticframework/tenant.yaml", tenant_yaml(plan.tenant_id))
     put(".agenticframework/process-gates.json",
         _process_gates_config(plan.stack, architectures.session_start_line(plan.style, plan.agentic), plan.gated))
+    if not (root / PROVIDERS).exists():
+        put(PROVIDERS, providers_declaration())
 
     written += install_gate_hooks(root, framework, prior=plan.prior_hooks, provisioning=False)
 

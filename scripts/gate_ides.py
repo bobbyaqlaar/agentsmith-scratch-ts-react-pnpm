@@ -199,7 +199,32 @@ class Adapter(NamedTuple):
         return retarget(payload, root, path)
 
 
+# The neutral profile of contract/gate/v1: the event as the checks read it, and
+# the decision as `gm.Decision`. It is a CONTRACT, not an IDE — it is deliberately
+# absent from IDES, which the registry pins one-for-one — and it is how a tenant
+# that named a provider, or another platform's adapter, talks to the gate.
+def _neutral_parse(event: str, payload: Mapping[str, Any]) -> gm.GateEvent:
+    try:
+        return gm.GateEvent.model_validate(dict(payload))
+    except Exception as exc:  # a payload in someone else's dialect, or malformed
+        # Unreadable is what every adapter raises for "I cannot read this", and
+        # the gate answers it with a refusal rather than a traceback: a provider
+        # handed a payload it does not understand must fail closed, not crash.
+        raise Unreadable(
+            f"this is not a {NEUTRAL} gate event (contract/gate/v1/event.schema.json): {exc}"
+        ) from exc
+
+
+def _neutral_render(decision: str, text: str, repeat: bool) -> str:
+    return gm.Decision(decision="block" if decision == "block" else decision, text=text).model_dump_json()
+
+
+NEUTRAL = "neutral"
+
 ADAPTERS: Dict[str, Adapter] = {
+    NEUTRAL: Adapter("", {"session-start": "session-start", "pre-edit": "pre-edit", "stop": "stop"},
+                     _neutral_parse, _neutral_render, True,
+                     "contract/gate/v1 — the profile a provider implements; no IDE sends it"),
     "claude": Adapter(".claude/settings.json",
                       {"session-start": "SessionStart", "pre-edit": "PreToolUse", "stop": "Stop"},
                       _generic, _claude_render, False,

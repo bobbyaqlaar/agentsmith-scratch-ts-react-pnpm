@@ -379,7 +379,7 @@ def _scaffold_files(root: Path, written: list[str]) -> list[str]:
 
 def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Optional[str], agentic: bool,
                            written: list[str], force: bool, design: str = SCAFFOLD_DESIGN,
-                           adopted: bool = False) -> list[str]:
+                           adopted: bool = False, generated_by: Optional[str] = None) -> list[str]:
     """The design for the commit that arms the gates, and the manifest that
     lets its review be `n/a: generated scaffold` (scripts/process_gate.py
     scaffold_problems) — for `tenant init`, or `tenant adopt` when `adopted`.
@@ -415,7 +415,9 @@ def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Option
         # pillars nobody can list.
         print(f"  ! {design} not written: {registry_path} is missing — re-run "
               "install-ai-stack.sh from a current AgentSmith checkout", file=sys.stderr)
-    elif design_path.exists() and not force:
+    elif design_path.exists() and (not force or generated_by):
+        # A sync keeps the design the arming commit wrote: it changes no scope,
+        # and rewriting it would make every sync look like a new design.
         print(f"  = {design} exists — left untouched")
     else:
         from runtime import architectures
@@ -425,7 +427,7 @@ def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Option
         design_path.write_text(architectures.render_scaffold_design(
             tenant_id, stack, style, agentic, files, registry.get("pillars", []), adopted=adopted), encoding="utf-8")
         records.append(design)
-    command = "agentsmith tenant adopt" if adopted else "agentsmith tenant init"
+    command = generated_by or ("agentsmith tenant adopt" if adopted else "agentsmith tenant init")
     manifest = {
         "_about": f"What `{command}` wrote, by SHA-256. The review of the commit that arms the gates may be "
                   "`n/a: generated scaffold` only while every gated file still matches — see AgentSmith "
@@ -822,6 +824,43 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
     return 0 if report.passed else 1
 
 
+def _cmd_sync(args: argparse.Namespace) -> int:
+    """`agentsmith sync` — runtime/sync.py. Brings this repository's copies of
+    the framework up to date; the commit it prints passes the repository's own
+    gates, because every file in it is one the framework wrote."""
+    from runtime.sync import SyncError, commit_command, describe, plan_sync, sync
+
+    root = Path(args.root).resolve() if args.root else Path.cwd()
+    try:
+        plan = plan_sync(root)
+    except (SyncError, FileNotFoundError) as exc:
+        print(f"agentsmith: {exc}", file=sys.stderr)
+        return 2
+    print(describe(plan))
+    if not plan.stale and not plan.vendored:
+        print("\nNothing to do.")
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("\nagentsmith: not a terminal, so nothing was written — re-run with --yes to sync",
+                  file=sys.stderr)
+            return 2
+        if input("\nSync this repository? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Nothing written.")
+            return 1
+    written = sync(plan)
+    if not written:
+        print("\nNothing to do.")
+        return 0
+    print()
+    for path in written:
+        print(f"  ~ {path}")
+    print(f"\nSynced with AgentSmith {plan.version}. Commit it as written:\n"
+          f"  {commit_command(written, plan.version)}\n"
+          "The gate accepts that review while every file in the commit is one the framework wrote.")
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Delegates to verify_system, which already owns every check.
 
@@ -1046,6 +1085,11 @@ def build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--root", default=None, help="target repo (default: cwd)")
     adopt.add_argument("--yes", action="store_true", help="adopt without asking (required off a terminal)")
     adopt.set_defaults(func=_cmd_tenant_adopt)
+
+    sync_cmd = sub.add_parser("sync", help="bring this repository's copies of the framework up to date")
+    sync_cmd.add_argument("--root", default=None, help="the repository (default: cwd)")
+    sync_cmd.add_argument("--yes", action="store_true", help="sync without asking (required off a terminal)")
+    sync_cmd.set_defaults(func=_cmd_sync)
 
     gate = sub.add_parser("gate", help="answer a gate event (contract/gate/v1 — the neutral profile)")
     gate.add_argument("event", choices=("session-start", "pre-edit", "stop"))

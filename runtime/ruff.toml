@@ -45,6 +45,7 @@ extend-exclude = [
   "security_paths.py",
   "self_correction.py",
   "structured_output.py",
+  "sync.py",
   "temporal_client.py",
   "temporal_replay.py",
   "tenancy.py",

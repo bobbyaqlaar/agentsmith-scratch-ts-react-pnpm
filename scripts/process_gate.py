@@ -439,6 +439,13 @@ def kg_problems(files: List[str], review_text: str, read: Reader) -> List[str]:
 
 SCAFFOLD_MANIFEST = ".agenticframework/scaffold.json"
 _SCAFFOLD_REVIEW = re.compile(r"^n/?a\s*:\s*generated scaffold\s*$", re.I)
+# The same hash rule, for the commit that brings a tenant's copies of the
+# framework up to date (`agentsmith sync`, .agent-rfc/designs/framework-sync.md).
+# It happens whenever a tenant upgrades, so it is not tied to the arming commit;
+# what it is tied to is every gated file in the commit being what the manifest
+# says the framework wrote. A file the tenant edited is not in the manifest, or
+# no longer matches it, and gets the normal rule with its name.
+_SYNC_REVIEW = re.compile(r"^n/?a\s*:\s*framework sync(\s+\S+)?\s*$", re.I)
 
 
 def _manifest_author(read: Reader) -> str:
@@ -449,6 +456,28 @@ def _manifest_author(read: Reader) -> str:
         return "agentsmith tenant init"
 
 
+def manifest_problems(gated: List[str], read: Reader) -> List[str]:
+    """Why the manifest does not vouch for every gated file in this commit —
+    empty when it does. The one hash check behind both escapes."""
+    text = read(SCAFFOLD_MANIFEST)
+    if text is None:
+        return [f"{SCAFFOLD_MANIFEST} is not in this commit, so nothing vouches for it — "
+                "record a review in .agent-rfc/reviews/"]
+    try:
+        files = json.loads(text).get("files") or {}
+    except (ValueError, AttributeError):
+        return [f"{SCAFFOLD_MANIFEST} is not a manifest — record a review in .agent-rfc/reviews/"]
+    by = _manifest_author(read)
+    problems = []
+    for path in gated:
+        body = read(path)
+        if path not in files:
+            problems.append(f"{path} is not part of what `{by}` wrote — review it")
+        elif body is None or hashlib.sha256(body.encode("utf-8")).hexdigest() != files[path]:
+            problems.append(f"{path} is not what `{by}` wrote (its hash differs) — review it")
+    return problems
+
+
 def scaffold_problems(gated: List[str], read: Reader, arming: bool) -> List[str]:
     """Why this commit is not the untouched scaffold — empty when it is.
     `arming`: this commit's parent carries no gate config."""
@@ -456,23 +485,7 @@ def scaffold_problems(gated: List[str], read: Reader, arming: bool) -> List[str]
         return ["is accepted only on the commit that arms the gates — a repository's first commit, or the "
                 f"one `tenant adopt` prepared — and this commit's parent already carries {CONFIG}; "
                 "record a review in .agent-rfc/reviews/"]
-    text = read(SCAFFOLD_MANIFEST)
-    if text is None:
-        return [f"{SCAFFOLD_MANIFEST} is not in this commit, so nothing vouches for the scaffold — "
-                "record a review in .agent-rfc/reviews/"]
-    try:
-        files = json.loads(text).get("files") or {}
-    except (ValueError, AttributeError):
-        return [f"{SCAFFOLD_MANIFEST} is not a scaffold manifest — record a review in .agent-rfc/reviews/"]
-    by = _manifest_author(read)
-    problems = []
-    for path in gated:
-        body = read(path)
-        if path not in files:
-            problems.append(f"{path} is not part of the scaffold `{by}` wrote — review it")
-        elif body is None or hashlib.sha256(body.encode("utf-8")).hexdigest() != files[path]:
-            problems.append(f"{path} is not what `{by}` wrote (its hash differs) — review it")
-    return problems
+    return manifest_problems(gated, read)
 
 
 def record_text(kind: str, value: str, read: Reader, single: bool
@@ -608,6 +621,13 @@ def check_change(
             errors.extend(f"Review: n/a: generated scaffold — {p}" for p in problems)
         else:
             notes.append(f"Review: n/a: generated scaffold — {len(gated)} gated file(s) match "
+                         f"{SCAFFOLD_MANIFEST}, as `{_manifest_author(read)}` wrote them")
+    elif _SYNC_REVIEW.match(review_value):
+        problems = manifest_problems(gated, read)
+        if problems:
+            errors.extend(f"Review: n/a: framework sync — {p}" for p in problems)
+        else:
+            notes.append(f"Review: n/a: framework sync — {len(gated)} gated file(s) match "
                          f"{SCAFFOLD_MANIFEST}, as `{_manifest_author(read)}` wrote them")
     elif not na("Review", review_value):
         path, file_path, text, problem = record_text("Review", review_value, read, single)

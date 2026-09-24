@@ -38,6 +38,10 @@ PROVIDERS = ".agenticframework/providers.json"
 # own major as the range it expects (contract/gate/v1/protocol.md).
 GATE_CONTRACT = 1
 GATES_WORKFLOW = ".github/workflows/agentsmith-gates.yml"
+# Weekly, it brings the repository up to the framework's latest release and
+# opens a pull request (.agent-rfc/designs/sync-pull-request.md). Written here
+# so a tenant hears about an upgrade without anyone remembering to look.
+SYNC_WORKFLOW = ".github/workflows/agentsmith-sync.yml"
 
 # Client-side hooks git runs that a stub may stand in for. A known list, so a
 # helper file beside the hooks (husky.sh, a README) is never mistaken for one.
@@ -304,6 +308,7 @@ def plan_adoption(tenant_id: str, root: Path, *, stack: Optional[str] = None, ar
     existing = sorted(p.name for p in workflows.glob("*.y*ml")) if workflows.is_dir() else []
     actions += [(f".github/workflows/{name}", "leave") for name in existing if name != Path(GATES_WORKFLOW).name]
     actions.append((GATES_WORKFLOW, fate(GATES_WORKFLOW, "leave")))
+    actions.append((SYNC_WORKFLOW, fate(SYNC_WORKFLOW, "leave")))
     actions += [(".agent-rfc/fixtures/knowledge_graph.json", fate(".agent-rfc/fixtures/knowledge_graph.json",
                                                                    "merge")),
                 (ADOPTION_DESIGN, "create"), (".agenticframework/scaffold.json", "create")]
@@ -404,37 +409,47 @@ def _project_name(root: Path) -> str:
     return url.rsplit("/", 1)[-1].removesuffix(".git") if url else root.resolve().name
 
 
-def _write_rules(plan: Plan, framework: Path) -> list[str]:
-    """Generate the rule files beside the repository, then copy in the ones it
-    lacks and merge the ones it has."""
-    root, written = plan.root, []
+def generated_rules(root: Path, framework: Path, stack: str) -> dict[str, str]:
+    """What the framework's rule files say right now, rendered beside the
+    repository rather than into it: `{path: text}`.
+
+    One renderer for `adopt`, which writes these, and `sync`, which compares
+    them — two would disagree about what the rules say
+    (.agent-rfc/designs/sync-merged-files.md)."""
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         shutil.copytree(root / ".agenticframework", scratch / ".agenticframework")
         done = subprocess.run(
             [sys.executable, str(framework / "scripts" / "generate-ide-config.py"), "--repo-root", str(scratch),
-             "--rules-file", str(framework / "templates" / "agent-rules.yaml"), "--stack", plan.stack,
-             "--project-name", _project_name(root), "--test-cmd", _test_command(root, plan.stack)],
+             "--rules-file", str(framework / "templates" / "agent-rules.yaml"), "--stack", stack,
+             "--project-name", _project_name(root), "--test-cmd", _test_command(root, stack)],
             capture_output=True, text=True, check=False)
         if done.returncode != 0:
             print(f"  ! agent rules not generated: {done.stderr.strip()[:300]}", file=sys.stderr)
-            return []
-        for generated in sorted(p for p in scratch.rglob("*") if p.is_file()):
-            rel = generated.relative_to(scratch).as_posix()
-            if rel.startswith(".agenticframework/"):
-                continue
-            target = root / rel
-            text = generated.read_text(encoding="utf-8")
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(text, encoding="utf-8")
-            elif rel in RULE_FILES:
-                existing = target.read_text(encoding="utf-8")
-                target.write_text(text if generated_by_agentsmith(existing) else merge_rules_block(existing, text),
-                                  encoding="utf-8")
-            else:
-                continue
-            written.append(rel)
+            return {}
+        return {
+            generated.relative_to(scratch).as_posix(): generated.read_text(encoding="utf-8")
+            for generated in sorted(p for p in scratch.rglob("*") if p.is_file())
+            if not generated.relative_to(scratch).as_posix().startswith(".agenticframework/")
+        }
+
+
+def _write_rules(plan: Plan, framework: Path) -> list[str]:
+    """Generate the rule files, then copy in the ones the repository lacks and
+    merge the ones it has."""
+    root, written = plan.root, []
+    for rel, text in generated_rules(root, framework, plan.stack).items():
+        target = root / rel
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        elif rel in RULE_FILES:
+            existing = target.read_text(encoding="utf-8")
+            target.write_text(text if generated_by_agentsmith(existing) else merge_rules_block(existing, text),
+                              encoding="utf-8")
+        else:
+            continue
+        written.append(rel)
     return written
 
 
@@ -485,14 +500,16 @@ def adopt(plan: Plan) -> list[str]:
     elif "## Architecture (target)" not in design.read_text(encoding="utf-8"):
         put("docs/DESIGN.md", design.read_text(encoding="utf-8").rstrip("\n") + "\n\n" + section)
 
-    if not (root / GATES_WORKFLOW).exists():
-        name = Path(GATES_WORKFLOW).name
+    for workflow in (GATES_WORKFLOW, SYNC_WORKFLOW):
+        if (root / workflow).exists():
+            continue
+        name = Path(workflow).name
         template = next((d / name for d in (_templates_dir(), framework / "workflow-templates")
                          if d is not None and (d / name).is_file()), None)
         if template is None:
             print(f"  ! {name} template not found — re-run install-ai-stack.sh", file=sys.stderr)
-        else:
-            put(GATES_WORKFLOW, template.read_text(encoding="utf-8").replace("{{FRAMEWORK_REF}}", plan.framework_ref))
+            continue
+        put(workflow, template.read_text(encoding="utf-8").replace("{{FRAMEWORK_REF}}", plan.framework_ref))
 
     graph = ".agent-rfc/fixtures/knowledge_graph.json"
     mapper = framework / "scripts" / "map_codebase.py"

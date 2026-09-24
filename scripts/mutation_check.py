@@ -876,6 +876,83 @@ CATALOGUE: tuple[Suite, ...] = (
             ),
         ),
     ),
+
+    # .agent-rfc/designs/framework-sync.md — one command keeps a tenant current,
+    # and the tenant's own gates accept the commit it prints.
+    Suite(
+        name="framework_sync",
+        tests=(
+            "scripts/test/test_framework_sync.py",
+            "scripts/test/test_sync_workflow.py",
+            "scripts/test/test_tenant_adopt.py",
+        ),
+        mutations=(
+            Mutation(
+                "any commit may claim to be a framework sync",
+                "scripts/process_gate.py",
+                "    elif _SYNC_REVIEW.match(review_value):\n        problems = manifest_problems(gated, read)",
+                "    elif _SYNC_REVIEW.match(review_value):\n        problems = []",
+            ),
+            Mutation(
+                "a sync claims to have written files it did not touch",
+                "runtime/sync.py",
+                "    written = [path for path in dict.fromkeys(written) if _changed(root, path)]",
+                "    written = list(dict.fromkeys(written))",
+            ),
+            Mutation(
+                "a stale hook is not noticed, so a sync never refreshes anything",
+                "runtime/sync.py",
+                "        if here.is_file() and hook.is_file() and _digest(here) != _digest(hook):",
+                "        if False:",
+            ),
+            Mutation(
+                "a file the tenant edited is refreshed anyway — their work is clobbered",
+                "runtime/sync.py",
+                '        if state == "edited":',
+                "        if False:",
+            ),
+            Mutation(
+                "a rule file is rewritten whole, losing the tenant's own prose around the block",
+                "runtime/sync.py",
+                "        if rel in _RULE_FILES and target.is_file() and not _generated_whole(target):\n"
+                "            target.write_text(_with_block(target, text), encoding=\"utf-8\")\n"
+                "        else:\n"
+                "            target.write_text(text, encoding=\"utf-8\")",
+                '        target.write_text(text, encoding="utf-8")',
+            ),
+            Mutation(
+                "Claude's settings are judged by the whole file, so a tenant's own permissions "
+                "freeze their gate wiring",
+                "runtime/sync.py",
+                "        if rel in _MERGED and here.is_file():",
+                "        if False:",
+            ),
+            Mutation(
+                "adopt stops writing the sync workflow — a tenant never hears it is behind",
+                "runtime/adopt.py",
+                "    for workflow in (GATES_WORKFLOW, SYNC_WORKFLOW):\n        if (root / workflow).exists():",
+                "    for workflow in (GATES_WORKFLOW,):\n        if (root / workflow).exists():",
+            ),
+            Mutation(
+                "the sync workflow is not kept current, so it proposes from a stale copy of itself",
+                "runtime/sync.py",
+                "    for workflow in (GATES_WORKFLOW, SYNC_WORKFLOW):\n        template = _workflow_template(",
+                "    for workflow in (GATES_WORKFLOW,):\n        template = _workflow_template(",
+            ),
+            Mutation(
+                "upgrade vendors into an adopted repository again",
+                "runtime/machine/upgrade.py",
+                "    if is_adopted(repo):",
+                "    if False:",
+            ),
+            Mutation(
+                "the manifest stops recording which command wrote it",
+                "runtime/cli.py",
+                '    command = generated_by or ("agentsmith tenant adopt" if adopted else "agentsmith tenant init")',
+                '    command = "agentsmith tenant adopt" if adopted else "agentsmith tenant init"',
+            ),
+        ),
+    ),
 )
 
 

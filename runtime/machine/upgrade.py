@@ -128,6 +128,16 @@ def upgrade(
         out("❌ Not a git repository")
         return 1
 
+    # A repository `tenant adopt` brought in keeps its own layout: vendoring
+    # into it undoes what adoption promised, and `agentsmith sync` is what keeps
+    # it current (.agent-rfc/designs/framework-sync.md).
+    from runtime.sync import is_adopted
+
+    if is_adopted(repo):
+        out("ℹ️  This repository was brought in by `agentsmith tenant adopt` — nothing to vendor.")
+        out("   `agentsmith sync` refreshes the hooks, the IDE configs and the rules it does hold.")
+        return 0
+
     # Same guard as hooks/post-checkout's "installed mode": vendoring runtime/
     # into the root of a repo that pins the package would shadow the pin.
     if _depends_on_runtime_package(repo):

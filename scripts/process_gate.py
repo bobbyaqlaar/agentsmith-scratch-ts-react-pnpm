@@ -488,6 +488,13 @@ def scaffold_problems(gated: List[str], read: Reader, arming: bool) -> List[str]
     return manifest_problems(gated, read)
 
 
+def vouched_note(label: str, gated: List[str], read: Reader) -> str:
+    """The sentence both hash-verified escapes end on. One place, so the scaffold
+    and the sync escape can never describe the same check in two different ways."""
+    return (f"Review: n/a: {label} — {len(gated)} gated file(s) match "
+            f"{SCAFFOLD_MANIFEST}, as `{_manifest_author(read)}` wrote them")
+
+
 def record_text(kind: str, value: str, read: Reader, single: bool
                 ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """The text a `Design:` or `Review:` trailer points at, in this commit.
@@ -620,15 +627,13 @@ def check_change(
         if problems:
             errors.extend(f"Review: n/a: generated scaffold — {p}" for p in problems)
         else:
-            notes.append(f"Review: n/a: generated scaffold — {len(gated)} gated file(s) match "
-                         f"{SCAFFOLD_MANIFEST}, as `{_manifest_author(read)}` wrote them")
+            notes.append(vouched_note("generated scaffold", gated, read))
     elif _SYNC_REVIEW.match(review_value):
         problems = manifest_problems(gated, read)
         if problems:
             errors.extend(f"Review: n/a: framework sync — {p}" for p in problems)
         else:
-            notes.append(f"Review: n/a: framework sync — {len(gated)} gated file(s) match "
-                         f"{SCAFFOLD_MANIFEST}, as `{_manifest_author(read)}` wrote them")
+            notes.append(vouched_note("framework sync", gated, read))
     elif not na("Review", review_value):
         path, file_path, text, problem = record_text("Review", review_value, read, single)
         if problem:

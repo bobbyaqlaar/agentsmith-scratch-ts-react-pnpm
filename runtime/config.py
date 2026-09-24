@@ -126,7 +126,7 @@ def _dotenv_value(raw: str) -> str:
     for i, ch in enumerate(raw):
         if ch == "#" and (i == 0 or raw[i - 1] in " \t"):
             return raw[:i].strip()
-    return raw.strip()
+    return raw
 
 
 _ENV_FILE: dict[str, str] = {}

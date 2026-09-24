@@ -42,7 +42,7 @@ from pydantic import Field as PydanticField
 
 logger = logging.getLogger(__name__)
 
-from runtime.config import resolve  # noqa: E402
+from runtime.config import repo_root, resolve  # noqa: E402
 from runtime.moderation import (  # noqa: F401,E402 — re-export block, deliberately after the logger
     ModerationBlockedError,
     ModerationHookRequiredError,
@@ -147,20 +147,6 @@ class BudgetExceededError(RuntimeError):
 
 
 # ── Model registry (§29 Model Registry) ───────────────────────────────────────
-
-
-def _repo_root() -> Path:
-    """Delegates to runtime.config.repo_root — see there for why the marker is
-    `.agenticframework` OR `.git`, not `.git` alone.
-
-    There were FIVE of these in three disagreeing variants. A tenant nested
-    inside a parent git repo resolved to the parent under the `.git`-only ones
-    and to the tenant under the others, so `tenant.yaml` and `models.yaml` were
-    loaded from different directories in the same process.
-    """
-    from runtime.config import repo_root
-
-    return repo_root()
 
 
 _FRAMEWORK_MODELS_YAML = Path(__file__).resolve().parent / "models.yaml"
@@ -308,7 +294,7 @@ def load_model_registry() -> dict:
     for role, cfg in _roles_from_doc(_load_yaml(_FRAMEWORK_MODELS_YAML)).items():
         registry[role] = dict(cfg)
 
-    root = _repo_root()
+    root = repo_root()
     tenant_models_path = root / "models.yaml"
     if tenant_models_path.exists():
         for role, cfg in _roles_from_doc(_load_yaml(tenant_models_path)).items():

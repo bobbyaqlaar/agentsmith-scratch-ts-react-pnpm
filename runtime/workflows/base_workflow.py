@@ -143,14 +143,6 @@ def _dlq_task_id(run_id: str, gate_id: str, attempt: Any) -> str:
 
 
 @dataclass
-class AgentWorkflowInput:
-    tenant_id: str
-    task: str
-    spec: str
-    workflow_run_id: str
-
-
-@dataclass
 class AgentWorkflowResult:
     status: str  # "success" | "failed" | "dead_letter"
     plan: str = ""

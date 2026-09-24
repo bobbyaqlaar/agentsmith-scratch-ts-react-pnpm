@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator, Optional
 
 # Attribute namespace for agent-step spans, kept distinct from the gateway's
@@ -33,24 +32,23 @@ from typing import Any, Iterator, Optional
 _NS = "agent"
 
 
-def _repo_root() -> Path:
-    """Delegates to runtime.config.repo_root — see there for why the marker is
-    `.agenticframework` OR `.git`, not `.git` alone.
-
-    There were FIVE of these in three disagreeing variants. A tenant nested
-    inside a parent git repo resolved to the parent under the `.git`-only ones
-    and to the tenant under the others, so `tenant.yaml` and `models.yaml` were
-    loaded from different directories in the same process.
-    """
-    from runtime.config import repo_root
-
-    return repo_root()
-
-
 class _NoopSpan:
-    """Stand-in when tracing is unavailable — same surface, does nothing."""
+    """Stand-in when tracing is unavailable — same surface, does nothing.
+
+    It is also what `NoopTracer.start_as_current_span` hands back, so it must
+    work as a context manager: every caller writes `with … as span`.
+    """
+
+    def __enter__(self) -> "_NoopSpan":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
 
     def set_attribute(self, key: str, value: Any) -> None:
+        return None
+
+    def set_status(self, *_: Any, **__: Any) -> None:
         return None
 
     def record_exception(self, exc: BaseException) -> None:
@@ -58,6 +56,21 @@ class _NoopSpan:
 
     def is_recording(self) -> bool:
         return False
+
+
+class NoopTracer:
+    """A tracer for a process with no OpenTelemetry installed.
+
+    Public because the two reference stacks in `scripts/` need it and were each
+    carrying their own. Merging them is `merge-the-right-copy` twice over: one
+    copy had no `set_status`, and this module's `_NoopSpan` — the survivor —
+    had neither that nor `__enter__`, because nothing had ever used it through
+    `with`. Both are here now; `test_the_noop_tracer_survives_the_way_callers_
+    use_it` is what keeps them.
+    """
+
+    def start_as_current_span(self, *_: Any, **__: Any) -> Any:
+        return _NoopSpan()
 
 
 @contextmanager
@@ -268,14 +281,14 @@ def resource_attributes(project_name: Optional[str] = None) -> dict:
     """
     from runtime.environment import get_environment
 
-    from runtime.config import resolve
+    from runtime.config import repo_root, resolve
 
     project = resolve(
         "tenant.name",
         explicit=project_name,
         env_var="AGENT_PROJECT_NAME",
         default=None,
-    ) or _repo_root().name
+    ) or repo_root().name
     from runtime.version import framework_version
 
     attrs = {
@@ -353,6 +366,7 @@ def configure_tracing(
     project_name: Optional[str] = None,
     exporter: Any = None,
     redact: bool = True,
+    extra_resource_attributes: Optional[dict] = None,
 ) -> Any:
     """Install a TracerProvider wired the way pillar 3 requires. Returns it.
 
@@ -365,6 +379,12 @@ def configure_tracing(
 
     Idempotent-ish: OTel's global provider is one-shot, so a second call is
     ignored by the SDK. Returns whatever provider is active either way.
+
+    `extra_resource_attributes` is for a process where an attribute genuinely IS
+    fixed for its lifetime — a single-run script whose `agent.session_id` never
+    changes — which is the only case `resource_attributes` leaves to the caller.
+    A long-lived worker serving many tenants must not use it; that is what
+    `AgentIdentityProcessor` stamps per span.
     """
     try:
         from opentelemetry import trace
@@ -373,7 +393,8 @@ def configure_tracing(
     except ImportError:  # fail-open: tracing is optional, the app is not
         return None
 
-    provider = TracerProvider(resource=Resource.create(resource_attributes(project_name)))
+    attrs = {**resource_attributes(project_name), **(extra_resource_attributes or {})}
+    provider = TracerProvider(resource=Resource.create(attrs))
     provider.add_span_processor(AgentIdentityProcessor())
 
     if redact:

@@ -27,12 +27,16 @@ from typing import Optional
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 from _shared import (
-    _repo_root,
     _iso_now,
     fixtures_path,
     EVALS_FILE,
     GOLDEN_CRITERIA_FILE,
 )
+
+# One rule for "an unresolved MAJOR/CRITICAL entry for this event", and it
+# lives where the log and its schema do. This file carried a near-verbatim
+# copy of resolve_hitl, and the copy was the only one anything called.
+from agent_logger import AgentLogger
 
 
 # Resolved through the shared tables rather than literal filenames: these two
@@ -45,10 +49,6 @@ def _golden_path() -> Path:
 
 def _criteria_path() -> Path:
     return fixtures_path(GOLDEN_CRITERIA_FILE)
-
-
-def _log_path() -> Path:
-    return _repo_root() / ".agent-history.log"
 
 
 # ── Core promoter ─────────────────────────────────────────────────────────────
@@ -116,7 +116,9 @@ def promote(
         print(f"✅ Judge learning appended: {resolution_note[:80]}...")
 
     # ── 3. Mark .agent-history.log entries as resolved ────────────────────────
-    resolved_count = _mark_log_resolved(case_id, resolver, ts)
+    resolved_count = AgentLogger("promote-learning").resolve_hitl(
+        case_id, resolved_by=resolver
+    )
     if resolved_count:
         print(
             f"✅ Marked {resolved_count} log entry/entries hitl_resolved for event={case_id!r}"
@@ -151,42 +153,6 @@ def promote(
         "golden_count": len(golden),
         "hitl_entries_resolved": resolved_count,
     }
-
-
-def _mark_log_resolved(event_filter: str, resolver: str, ts: str) -> int:
-    """Mark all unresolved MAJOR/CRITICAL entries whose event matches event_filter."""
-    log_file = _log_path()
-    if not log_file.exists():
-        return 0
-
-    updated = 0
-    lines: list[str] = []
-    with log_file.open("r", encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                entry = json.loads(raw)
-                if (
-                    entry.get("event") == event_filter
-                    and entry.get("level") in ("MAJOR", "CRITICAL")
-                    and not entry.get("hitl_resolved", True)
-                ):
-                    entry["hitl_resolved"] = True
-                    entry["hitl_resolved_by"] = resolver
-                    entry["hitl_resolved_at"] = ts
-                    raw = json.dumps(entry, default=str)
-                    updated += 1
-            # fail-open: one malformed JSON-lines entry must not abort resolving the rest;
-            # raw line is preserved unchanged below either way
-            except Exception:
-                pass
-            lines.append(raw)
-
-    with log_file.open("w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
-    return updated
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

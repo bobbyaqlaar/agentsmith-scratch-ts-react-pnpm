@@ -95,52 +95,30 @@ def _default_state(task: str, spec: str, project: str) -> AgentState:
 def _get_tracer(project: str, session_id: str) -> Any:
     try:
         from opentelemetry import trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.resources import Resource
 
-        # See local_agent_stack._setup_otel — one resolver, four callers. This
-        # copy read only AGENT_PHOENIX_ENDPOINT and defaulted to localhost, so
-        # it also ignored OTEL_EXPORTER_OTLP_TRACES_ENDPOINT entirely.
+        # See local_agent_stack._setup_otel — one provider builder, two callers.
+        # Assembling it here meant no AgentIdentityProcessor and no
+        # TraceRedactor, in a file README.md offers as a shape to copy.
         from runtime.otlp import span_exporter
+        from runtime.tracing import configure_tracing
 
-        from agent_logger import _tenant_id
+        from _shared import _tenant_id
 
-        resource_attrs = {
-            "service.name": project,
-            "project.name": project,
-            "agent.session_id": session_id,
-        }
+        fixed = {"agent.session_id": session_id}
         tenant_id = _tenant_id()
         if tenant_id:
-            resource_attrs["tenant.id"] = tenant_id
-        resource = Resource.create(resource_attrs)
-        provider = TracerProvider(resource=resource)
-        exporter = span_exporter()
-        if exporter is not None:
-            provider.add_span_processor(BatchSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
+            fixed["tenant.id"] = tenant_id
+
+        configure_tracing(
+            project_name=project,
+            exporter=span_exporter(),
+            extra_resource_attributes=fixed,
+        )
         return trace.get_tracer("agenticframework.langgraph")
     except Exception:
+        from runtime.tracing import NoopTracer
 
-        class _Noop:
-            def start_as_current_span(self, *a, **k):
-                class _Span:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *_):
-                        pass
-
-                    def set_attribute(self, *_):
-                        pass
-
-                    def record_exception(self, *_):
-                        pass
-
-                return _Span()
-
-        return _Noop()
+        return NoopTracer()
 
 
 # ── LangChain model factory ───────────────────────────────────────────────────

@@ -35,61 +35,33 @@ def _setup_otel(project_name: str, session_id: str) -> Any:
     """Initialise OTLP tracer. Returns the tracer or a no-op if unavailable."""
     try:
         from opentelemetry import trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.resources import Resource
 
-        # runtime/otlp.py owns the endpoint, for all four callers that used to
-        # own it separately. This one's fallback chain ended at
-        # OTEL_EXPORTER_OTLP_ENDPOINT — the variable docs/UserManual.md,
-        # docker-compose.yml and the old `ai-dashboard-start` all set to a full
-        # `…/v1/traces` URL — and then appended `/v1/traces` to whatever it
-        # found. portal/lib/tracing.ts had documented that exact trap and
-        # guarded against it; this sibling, reading the same variable in the
-        # same repo, never got the guard.
+        # configure_tracing, not a hand-rolled provider: it adds the identity
+        # processor and the redactor, which this file assembled without for as
+        # long as it assembled its own. README.md offers this file as a shape to
+        # copy, so the shape has to be the right one.
         from runtime.otlp import span_exporter
+        from runtime.tracing import configure_tracing
 
-        from agent_logger import _tenant_id
+        from _shared import _tenant_id
 
-        resource_attrs = {
-            "service.name": project_name,
-            "project.name": project_name,
-            "agent.session_id": session_id,
-        }
+        # Fixed for the life of this process — one run, one session, one tenant
+        # — which is the only case resource_attributes() leaves to the caller.
+        fixed = {"agent.session_id": session_id}
         tenant_id = _tenant_id()
         if tenant_id:
-            resource_attrs["tenant.id"] = tenant_id
-        resource = Resource.create(resource_attrs)
-        provider = TracerProvider(resource=resource)
-        exporter = span_exporter()
-        if exporter is not None:
-            provider.add_span_processor(BatchSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
+            fixed["tenant.id"] = tenant_id
+
+        configure_tracing(
+            project_name=project_name,
+            exporter=span_exporter(),
+            extra_resource_attributes=fixed,
+        )
         return trace.get_tracer("agenticframework")
     except Exception:
-        return _NoopTracer()
+        from runtime.tracing import NoopTracer
 
-
-class _NoopSpan:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        pass
-
-    def set_attribute(self, *_):
-        pass
-
-    def set_status(self, *_):
-        pass
-
-    def record_exception(self, *_):
-        pass
-
-
-class _NoopTracer:
-    def start_as_current_span(self, *_, **__):
-        return _NoopSpan()
+        return NoopTracer()
 
 
 # ── State ─────────────────────────────────────────────────────────────────────

@@ -28,18 +28,12 @@ def _filter_controls(
 ) -> list[ControlSpec]:
     if framework is None:
         return list(controls)
-    out: list[ControlSpec] = []
-    for c in controls:
-        tags = c.frameworks
-        if framework == "owasp" and tags.owasp:
-            out.append(c)
-        elif framework == "nist" and tags.nist:
-            out.append(c)
-        elif framework == "atlas" and tags.atlas:
-            out.append(c)
-        elif framework == "iso42001" and tags.iso42001:
-            out.append(c)
-    return out
+    # FrameworkTags names the frameworks; this reads the name off it rather
+    # than restating the four. As an if/elif chain it answered an unknown
+    # framework with an empty list — indistinguishable from "no control carries
+    # that tag" — so a fifth one would have reported zero rather than failing.
+    # getattr with no default raises instead, at the one place that knows them.
+    return [c for c in controls if getattr(c.frameworks, framework)]
 
 
 def _status_for(control: ControlSpec, by_id: dict[str, ControlResult]) -> str:

@@ -36,7 +36,6 @@ import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -93,20 +92,6 @@ class ModerationHookImportError(RuntimeError):
     callable — a broken declaration must be loud, never a silent skip."""
 
 
-def _repo_root() -> Path:
-    """Delegates to runtime.config.repo_root — see there for why the marker is
-    `.agenticframework` OR `.git`, not `.git` alone.
-
-    There were FIVE of these in three disagreeing variants. A tenant nested
-    inside a parent git repo resolved to the parent under the `.git`-only ones
-    and to the tenant under the others, so `tenant.yaml` and `models.yaml` were
-    loaded from different directories in the same process.
-    """
-    from runtime.config import repo_root
-
-    return repo_root()
-
-
 def declared_hook_path() -> Optional[str]:
     """Dotted path of the declared moderator, or None.
 
@@ -117,7 +102,9 @@ def declared_hook_path() -> Optional[str]:
     if env:
         return env
 
-    tenant_yaml = _repo_root() / ".agenticframework" / "tenant.yaml"
+    from runtime.config import repo_root
+
+    tenant_yaml = repo_root() / ".agenticframework" / "tenant.yaml"
     if not tenant_yaml.exists():
         return None
     try:
@@ -151,7 +138,9 @@ def load_declared_moderator() -> Optional[ModeratorFn]:
     # relative to the tenant repo root. Without this the harness — which
     # runs from the framework install, not the tenant checkout — could not
     # import it, and every tenant would have to set PYTHONPATH by hand.
-    root = str(_repo_root())
+    from runtime.config import repo_root
+
+    root = str(repo_root())
     if root not in sys.path:
         sys.path.insert(0, root)
 

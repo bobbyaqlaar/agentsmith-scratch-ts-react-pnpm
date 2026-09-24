@@ -8,8 +8,10 @@ Node types:
 
 Edges:
   - IMPORTS             — file-to-file import relationship
-  - IMPLEMENTS          — file implements guardrail
   - CAUSED_INCIDENT     — file linked to a production incident
+
+IMPORTS is the only edge a committed graph holds. CAUSED_INCIDENT is written by
+`inject_production_learning`, which nothing but its test calls yet.
 
 Persisted to .agent-rfc/fixtures/knowledge_graph.json (node-link format).
 Updated by map_codebase.py on every commit and checkout.
@@ -168,12 +170,6 @@ class AgentKnowledgeGraph:
         self._g.add_edge(source, target, edge_type="IMPORTS")
         self.save()
 
-    def link_file_to_guardrail(self, file_path: str, rule_id: str) -> None:
-        """Mark a file as implementing a guardrail."""
-        if self._g.has_node(file_path) and self._g.has_node(rule_id):
-            self._g.add_edge(file_path, rule_id, edge_type="IMPLEMENTS")
-            self.save()
-
     def remove_file(self, rel_path: str) -> None:
         """Remove a stale CodebaseFile node (e.g. deleted file)."""
         if self._g.has_node(rel_path):
@@ -267,9 +263,6 @@ class AgentKnowledgeGraph:
                 1 for _, d in self._g.nodes(data=True) if d.get("node_type") == nt
             )
         return counts
-
-    def as_json(self) -> str:
-        return json.dumps(nx_json.node_link_data(self._g), indent=2, default=str)
 
 
 # The impact computation lives in gate_kg.py, which the process gate can import

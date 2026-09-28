@@ -159,15 +159,24 @@ delivery:
 
 
 def _templates_dir() -> Optional[Path]:
-    """Where `agentsmith tenant init` copies CI workflows from.
+    """Where `agentsmith tenant init` and `tenant adopt` copy CI workflows from.
 
-    The installed location first, then the checkout — so a developer running
-    from a clone gets their own templates rather than the machine's stale copy,
-    which is the drift this whole file exists to end.
+    **This file's own location first**, then the machine install. The order used
+    to be the other way round under a docstring claiming it was this way, and
+    the code did the opposite of what the sentence promised: running from a
+    checkout served the machine's STALE templates. Found by adopting a throwaway
+    repository after fixing `agentsmith-gates.yml` — the tenant got the old file,
+    because the install had one, while `agentsmith-sync.yml` got the fix, because
+    the install did not. A fixed template silently failed to reach a tenant, and
+    the adopt tests passed because they were reading the same stale copy.
+
+    An installed `agentsmith` resolves to the same directory either way: there
+    `__file__` is already under ~/.agent-framework. The fallback is for a
+    vendored tenant, whose `runtime/` has no `workflow-templates/` beside it.
     """
     for candidate in (
-        Path.home() / ".agent-framework" / "workflow-templates",
         Path(__file__).resolve().parent.parent / "workflow-templates",
+        Path.home() / ".agent-framework" / "workflow-templates",
     ):
         if candidate.is_dir():
             return candidate
@@ -614,12 +623,19 @@ def _provision_governance(root: Path, force: bool = False, design_md: Optional[s
 def _actions_dir() -> Optional[Path]:
     """Composite actions the cd-* workflows call as `./.github/actions/<name>`.
 
-    Installed location first, then the checkout — the same order, for the same
-    reason, as `_templates_dir`.
+    This file's location first, then the machine install — the same order, for
+    the same reason, as `_templates_dir`, and it was wrong here too. On the
+    machine this was found on, ~/.agent-framework/github-actions held THREE of
+    the five actions: `install-python-deps` and `rollback-notify` were added to
+    the checkout and never re-installed. A tenant adopted there got workflows
+    calling two actions that were not copied in, which fails at the first
+    `uses:` with "Can't find 'action.yml'" — a whole-workflow rejection, not a
+    step failure. CI never saw it because the scratch tenants run
+    install-ai-stack.sh first, so their install is never stale.
     """
     for candidate in (
-        Path.home() / ".agent-framework" / "github-actions",
         Path(__file__).resolve().parent.parent / ".github" / "actions",
+        Path.home() / ".agent-framework" / "github-actions",
     ):
         if candidate.is_dir():
             return candidate
@@ -763,7 +779,8 @@ def _cmd_tenant_adopt(args: argparse.Namespace) -> int:
         f"  {commit_command(written)}\n"
         "The gate accepts that review only on this commit and only while every file still matches. From the next "
         "commit on, a change to gated code — existing code included — needs a design and a review.\n"
-        "The gates workflow needs the AGENTSMITH_READ_TOKEN repository secret to check out AgentSmith."
+        "The gates workflow checks out AgentSmith with this run's own token; if AgentSmith is private, "
+        "set the AGENTSMITH_READ_TOKEN repository secret (Contents: read)."
     )
     return 0
 

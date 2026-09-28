@@ -623,6 +623,7 @@ CATALOGUE: tuple[Suite, ...] = (
         name="tenant_adopt",
         tests=(
             "scripts/test/test_hook_chain.py",
+            "scripts/test/test_hook_visibility_override.py",
             "scripts/test/test_tenant_adopt.py",
             "scripts/test/test_scaffold_review.py",
             "scripts/test/test_installed_runtime_tenant.py",
@@ -640,6 +641,7 @@ CATALOGUE: tuple[Suite, ...] = (
             "scripts/generate-ide-config.py",
             "workflow-templates/agentsmith-gates.yml",
             "scripts/test/test_hook_chain.py",
+            "scripts/test/test_hook_visibility_override.py",
             "scripts/test/test_tenant_adopt.py",
             "scripts/test/test_scaffold_review.py",
             "scripts/test/test_installed_runtime_tenant.py",
@@ -716,6 +718,19 @@ CATALOGUE: tuple[Suite, ...] = (
                 "runtime/cli.py",
                 "    written += _vendor(root, prior)\n",
                 "",
+            ),
+            Mutation(
+                "a declared AGENTSMITH_TENANT_VISIBILITY loses to detection — a public "
+                "fixture stops tracking the IDE configs its tenants track",
+                "hooks/post-checkout",
+                'if [ -z "$VIS_SOURCE" ] && echo "$REMOTE_URL" | grep -q "github.com"; then',
+                'if echo "$REMOTE_URL" | grep -q "github.com"; then',
+            ),
+            Mutation(
+                "a misspelt AGENTSMITH_TENANT_VISIBILITY is silently read as private",
+                "hooks/post-checkout",
+                '  *) echo "⚠️  AGENTSMITH_TENANT_VISIBILITY=',
+                '  *) VIS_SOURCE=declared; echo "',
             ),
             Mutation(
                 "the machine's post-checkout vendors into an adopted repository",
@@ -885,8 +900,15 @@ CATALOGUE: tuple[Suite, ...] = (
             "scripts/test/test_framework_sync.py",
             "scripts/test/test_sync_workflow.py",
             "scripts/test/test_tenant_adopt.py",
+            "scripts/test/test_workflow_template_wiring.py",
         ),
         mutations=(
+            Mutation(
+                "a tenant must hold a secret to check out a PUBLIC provider",
+                "workflow-templates/agentsmith-sync.yml",
+                "          token: ${{ secrets.AGENTSMITH_READ_TOKEN || github.token }}",
+                "          token: ${{ secrets.AGENTSMITH_READ_TOKEN }}",
+            ),
             Mutation(
                 "any commit may claim to be a framework sync",
                 "scripts/process_gate.py",

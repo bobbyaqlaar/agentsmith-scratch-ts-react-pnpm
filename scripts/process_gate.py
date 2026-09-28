@@ -336,10 +336,25 @@ def design_scope(text: str) -> List[str]:
 
 
 _PASS = re.compile(r"^##\s+Pass\s+(\d+)\s+[—–-]+\s+findings:\s*(\d+)\s*$", re.M)
+# Anything that was MEANT to be a pass heading. `_PASS` is strict and anchored, so
+# a heading with a suffix — `## Pass 4 — findings: 1 (CI, 2026-09-24)` — matches
+# nothing and simply disappears; the numbering check then reports the hole it left
+# as a gap. Three reviews in one session were refused that way, each sending the
+# author to the numbers rather than to the syntax. This finds the intent so the
+# two can be told apart (`ambiguous-signals`).
+_PASS_LOOSE = re.compile(r"^##\s*Pass\b.*$", re.M)
 
 
 def check_review(text: str, registry: "gm.Registry", adopted: bool = True) -> List[str]:
     passes = [(int(n), int(k)) for n, k in _PASS.findall(text)]
+    unparsed = [line for line in _PASS_LOOSE.findall(text) if not _PASS.match(line)]
+    if unparsed:
+        # Named before anything else: every check below reads a pass list this
+        # heading is missing from, so their answers would describe a document the
+        # author did not write.
+        return [f"this heading did not parse as a pass — it must be exactly "
+                f"'## Pass N — findings: K', with nothing after the count: {line.strip()!r}"
+                for line in unparsed]
     if not passes:
         return ["records no passes ('## Pass N — findings: K')"]
     errors = []

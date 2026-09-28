@@ -327,6 +327,9 @@ def check_approvals(deviations: list[Deviation], approvals: list[Approval], desi
 _ANSWER = re.compile(
     r"^-\s*(?P<ids>P\d+(?:\s*,\s*P?\d+)*)\s+(?P<verdict>\*\*[^*]+\*\*|\S+(?:\s+—)?)(?P<rest>.*)$"
 )
+# Anything that was MEANT to answer a pillar, however it is punctuated, so a line
+# `_ANSWER` cannot read is quoted rather than silently dropped.
+_MEANT_AS_ANSWER = re.compile(r"^-\s*P\d+\b")
 
 
 def pillar_kinds(section: str) -> dict[str, str]:
@@ -380,6 +383,18 @@ def check_pillars(section: str, registry: Registry, deviations: list[Deviation])
                 errors.append(f"{label} gap — a declared gap names its backlog id (`{label} gap — PB-123`)")
         else:
             errors.append(f"{label} '{verdict}' — each answer is applies, n/a, gap or deviation")
+    # A line that MEANT to answer a pillar and did not parse. Without this, an
+    # answer with a colon where a space belongs — `- P3: applies — ...` — is
+    # dropped by `_ANSWER` and the pillar reads as unanswered, so the author is
+    # told they omitted something that is on the page. Same fault as `_PASS` in
+    # scripts/process_gate.py (.agent-rfc/designs/sibling-sweep.md).
+    for line in section.splitlines():
+        stripped = line.strip()
+        if _MEANT_AS_ANSWER.match(stripped) and not _ANSWER.match(stripped):
+            errors.append(
+                f"this line did not parse as a pillar answer — it must be "
+                f"'- P<n> applies|n/a|gap|**deviation D<n>** — <why>': {stripped!r}"
+            )
     for pillar in registry.pillars:
         if "design" in pillar.check and pillar.id not in answered:
             errors.append(f"'## Pillars' does not answer P{pillar.id} {pillar.name} — {pillar.design_question}")

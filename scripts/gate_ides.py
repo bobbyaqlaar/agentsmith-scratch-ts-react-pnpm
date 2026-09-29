@@ -191,6 +191,13 @@ class Adapter(NamedTuple):
     events: Dict[str, str]  # our event -> the IDE's hook name
     parse: Callable[[str, Mapping[str, Any]], gm.GateEvent]
     render: Callable[[str, str, bool], str]
+    # Does the EDIT GATE fail closed for this IDE — is an edit refused when the
+    # gate cannot run? A governance fact a tenant picking an IDE needs, not a
+    # config detail: the mechanism differs per IDE (Cursor's failClosed key,
+    # Claude's shell fallback, the contract's fall-through), which is why no
+    # single line of code can read it and scripts/test/test_fail_closed_declared.py
+    # checks each one's own mechanism instead
+    # (.agent-rfc/designs/fail-closed-has-a-reader.md).
     fail_closed: bool
     note: str
 
@@ -227,8 +234,9 @@ ADAPTERS: Dict[str, Adapter] = {
                      "contract/gate/v1 — the profile a provider implements; no IDE sends it"),
     "claude": Adapter(".claude/settings.json",
                       {"session-start": "SessionStart", "pre-edit": "PreToolUse", "stop": "Stop"},
-                      _generic, _claude_render, False,
-                      "verified by use — this repo runs it; the shell fallback prints a deny"),
+                      _generic, _claude_render, True,
+                      "verified by use — this repo runs it; .githooks/process-gate's pre-edit "
+                      "fallback prints a deny, which is what makes it fail closed"),
     "cursor": Adapter(".cursor/hooks.json",
                       {"session-start": "sessionStart", "pre-edit": "preToolUse", "stop": "stop"},
                       _generic, _cursor_render, True,
@@ -318,11 +326,11 @@ def render_config(ide: str, existing: Optional[dict] = None) -> dict:
                 # There is no before-edit hook in Cursor; preToolUse fires
                 # before every tool and the matcher narrows it to writes.
                 "preToolUse": [{"command": _command("pre-edit", ide), "matcher": "Write",
-                                "failClosed": True, "timeout": 30}],
+                                "failClosed": ADAPTERS[ide].fail_closed, "timeout": 30}],
                 # The shell surface (G2b). Cursor gives it its own hook, with
                 # the command and cwd; the same subcommand reads both.
                 "beforeShellExecution": [{"command": _command("pre-edit", ide),
-                                          "failClosed": True, "timeout": 30}],
+                                          "failClosed": ADAPTERS[ide].fail_closed, "timeout": 30}],
                 "stop": [{"command": _command("stop", ide), "timeout": 60}],
             },
         }

@@ -529,9 +529,17 @@ def adopt(plan: Plan) -> list[str]:
     return written
 
 
-def commit_command(written: Sequence[str]) -> str:
+def commit_command(written: Sequence[str], rfc: Optional[str] = None) -> str:
     """The adoption commit: what adopt wrote, staged by name — `git add -A`
-    would sweep in whatever else the working tree holds."""
+    would sweep in whatever else the working tree holds.
+
+    `rfc` is an `RFC-NNN` reference when the repository has one. It goes in a
+    trailer because hooks/commit-msg requires such a reference under an
+    enterprise org policy and greps the whole message, and because the subject
+    has 72 characters to spend
+    (.agent-rfc/designs/scaffold-rfc-and-vouched-skip.md).
+    """
     paths = " ".join(shlex.quote(p) for p in written)
+    refs = f" -m \"Refs: {rfc}\"" if rfc else ""
     return (f"git add -- {paths} && git commit -m \"chore: adopt AgentSmith gates\" "
-            f"-m \"Design: {ADOPTION_DESIGN}\" -m \"Review: n/a: generated scaffold\"")
+            f"-m \"Design: {ADOPTION_DESIGN}\" -m \"Review: n/a: generated scaffold\"{refs}")

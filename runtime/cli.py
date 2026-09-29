@@ -371,6 +371,11 @@ def _vendor(root: Path, prior: Optional[Path]) -> list[str]:
 
 
 SCAFFOLD_DESIGN = ".agent-rfc/designs/scaffold.md"
+# Depth 1, not under designs/: hooks/pre-commit Guardrail 4 requires at least
+# one *.md directly under .agent-rfc/ where an org policy exists, and the
+# scaffold design is one level too deep to answer it
+# (.agent-rfc/designs/scaffold-rfc-and-vouched-skip.md).
+SCAFFOLD_RFC = ".agent-rfc/001-scaffold.md"
 SCAFFOLD_MANIFEST = ".agenticframework/scaffold.json"
 
 
@@ -401,6 +406,23 @@ def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Option
     framework = _framework_dir()
     if framework is None:
         return []
+    # The tenant's first RFC. Written before `files` is computed so the manifest
+    # records it: not required for the `n/a: generated scaffold` escape —
+    # .agent-rfc/** is not a gated path — but `--force` uses the manifest to know
+    # what is its own to replace.
+    rfc_path = root / SCAFFOLD_RFC
+    existing_rfcs = sorted(root.glob(".agent-rfc/*.md")) if (root / ".agent-rfc").is_dir() else []
+    if existing_rfcs:
+        # Never drop a stub among real ones, and never overwrite an edited
+        # template — including on --force.
+        print(f"  = {existing_rfcs[0].relative_to(root)} exists — no RFC template written")
+    else:
+        from runtime import architectures
+
+        rfc_path.parent.mkdir(parents=True, exist_ok=True)
+        rfc_path.write_text(architectures.render_scaffold_rfc(tenant_id, stack), encoding="utf-8")
+        written = [*written, SCAFFOLD_RFC]
+
     files = _scaffold_files(root, written)
     # A re-run skips what exists and is not its to replace (the composite
     # actions, vendored code); an earlier manifest vouched for those, and still
@@ -416,6 +438,11 @@ def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Option
         f for f, digest in earlier.items()
         if (root / f).is_file() and hashlib.sha256((root / f).read_bytes()).hexdigest() == digest})
     records: list[str] = []
+    # Returned as well as recorded: callers stage what this returns, and an RFC
+    # that only reached the manifest was left untracked by `tenant adopt`
+    # (test_tenant_adopt.py: 'every file adopt wrote was staged by name').
+    if SCAFFOLD_RFC in written:
+        records.append(SCAFFOLD_RFC)
     registry_path = framework / "templates" / "governance.json"
     design_path = root / design
     if not registry_path.is_file():
@@ -673,6 +700,25 @@ def _copy_composite_actions(root: Path) -> list[str]:
 # ── commands ─────────────────────────────────────────────────────────────────
 
 
+def _rfc_reference(root: Path) -> Optional[str]:
+    """`RFC-001` for the first RFC at `.agent-rfc/` depth 1, or None.
+
+    hooks/commit-msg requires an RFC-NNN somewhere in the message under an
+    enterprise org policy, and it greps the WHOLE message — so the reference goes
+    in a trailer, clear of the 72-character subject rule. Read off disk rather
+    than assumed to be 001: a tenant that already had RFCs keeps them, and the
+    scaffold writes none (.agent-rfc/designs/scaffold-rfc-and-vouched-skip.md).
+    """
+    rfc_dir = root / ".agent-rfc"
+    if not rfc_dir.is_dir():
+        return None
+    for path in sorted(rfc_dir.glob("*.md")):
+        number = path.name.split("-", 1)[0]
+        if number.isdigit():
+            return f"RFC-{number}"
+    return None
+
+
 def _cmd_tenant_init(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve() if args.root else Path.cwd()
     try:
@@ -699,10 +745,16 @@ def _cmd_tenant_init(args: argparse.Namespace) -> int:
     print(f"\nTenant '{args.tenant_id}' scaffolded ({args.stack}, {args.isolation}"
           f"{', ' + args.architecture if args.architecture else ''}{', agentic' if args.agentic else ''}).")
     if SCAFFOLD_MANIFEST in written:
+        # The RFC reference is unconditional, not enterprise-only: it is true
+        # everywhere (the RFC exists), it keeps this output the same on every
+        # machine, and without it an enterprise tenant's first commit is refused
+        # by hooks/commit-msg even once Guardrail 4 is satisfied.
+        rfc = _rfc_reference(root)
+        refs = f' -m "Refs: {rfc}"' if rfc else ""
         print(
             "\nThe gates are armed, and this scaffold is their first commit. Commit it exactly as written:\n"
             f'  git add -A && git commit -m "chore: scaffold {args.tenant_id}" '
-            f'-m "Design: {SCAFFOLD_DESIGN}" -m "Review: n/a: generated scaffold"\n'
+            f'-m "Design: {SCAFFOLD_DESIGN}" -m "Review: n/a: generated scaffold"{refs}\n'
             "The gate accepts that review only while every scaffolded file is unchanged; add code in the "
             "next commit, under a design of its own."
         )
@@ -776,7 +828,7 @@ def _cmd_tenant_adopt(args: argparse.Namespace) -> int:
                     {"stack": plan.stack, "adopted": True})
     print(
         f"\nTenant '{args.tenant_id}' adopted. The gates are armed; commit what adopt wrote, exactly as written:\n"
-        f"  {commit_command(written)}\n"
+        f"  {commit_command(written, _rfc_reference(plan.root))}\n"
         "The gate accepts that review only on this commit and only while every file still matches. From the next "
         "commit on, a change to gated code — existing code included — needs a design and a review.\n"
         "The gates workflow checks out AgentSmith with this run's own token; if AgentSmith is private, "

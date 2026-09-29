@@ -1840,7 +1840,8 @@ class LLMGateway:
                     attempt=retry_state.attempt_number,
                     reason=reason,
                 )
-            except Exception:
+            except Exception:  # fail-open: this is the retry's own logging; a
+                # failure to log must not abort the retry it is describing.
                 pass
 
         return _hook
@@ -2097,7 +2098,8 @@ class LLMGateway:
             span = trace.get_current_span()
             if span is not None and span.is_recording():
                 span.set_attribute("llm.gateway.attempts", attempts)
-        except Exception:  # fail-open
+        except Exception:  # fail-open: recording the attempt count must never
+            # break the call that succeeded.
             pass
 
         if is_cloud_provider(provider):

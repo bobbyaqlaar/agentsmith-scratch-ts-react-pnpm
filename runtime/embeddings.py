@@ -160,7 +160,8 @@ class SentenceTransformerEmbedder:
             try:
                 if out:
                     span.set_attribute("agent.embedding.dimensions", len(out[0]))
-            except Exception:  # fail-open
+            except Exception:  # fail-open: a span attribute must never cost the
+                # caller its embeddings.
                 pass
             return out
 

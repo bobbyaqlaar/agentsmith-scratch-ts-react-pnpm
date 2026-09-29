@@ -250,7 +250,8 @@ def _extract_guardrails_from_superpowers(superpowers_dir: Path) -> list[dict]:
                         "source_file": str(md_file),
                     }
                 )
-            except Exception:  # fail-open, same as the RFC extractor above
+            except Exception:  # fail-open: one unreadable skill file must not lose
+                # the rest of the map, same as the RFC extractor above.
                 pass
     return guardrails
 

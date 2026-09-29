@@ -1477,7 +1477,8 @@ def _glob_match(path: str, pattern: str) -> bool:
     try:
         if PurePosixPath(path).match(pattern):
             return True
-    except ValueError:
+    except ValueError:  # fail-open: an unparseable pattern is not a match here;
+        # fnmatch below is the answer for it.
         pass
     return fnmatch(path, pattern) or fnmatch(path, pattern.replace("**/", "*"))
 
@@ -1757,7 +1758,8 @@ def load_verified(root: Path) -> dict:
         data = json.loads((_git_dir(root) / VERIFIED_REL).read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("shas"), list):
             return {"version": 1, "shas": [str(s) for s in data["shas"]], "initialised": True}
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError):  # fail-open: a missing or
+        # unreadable store means "never swept", as the docstring says — initialise.
         pass
     return {"version": 1, "shas": [], "initialised": False}
 

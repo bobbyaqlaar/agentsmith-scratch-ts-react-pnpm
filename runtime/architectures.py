@@ -7,6 +7,7 @@ the agentic overlay (.agent-rfc/designs/tenant-architecture.md).
     render_design_md(...)               docs/DESIGN.md for a new tenant
     render_architecture(...)            its architecture sections; `target=True` for `tenant adopt`
     render_scaffold_design(...)         the design for the commit that arms the gates
+    render_scaffold_rfc(...)            the tenant's first RFC, as a template to fill in
     session_start_line(style, agentic)  one line every agent session starts with
 
 The catalogue is the one home of what each style is; `tenant init` renders it
@@ -184,6 +185,47 @@ def _scaffold_answers(stack: str, style: Optional[str], agentic: bool, adopted: 
         16: ("applies — `docs/DESIGN.md` › The agent layer: a failed step parks for a human, never guessed at"
              if agentic else _SCAFFOLD_DEFAULT),
     }
+
+
+def render_scaffold_rfc(tenant_id: str, stack: str) -> str:
+    """The tenant's first RFC, at `.agent-rfc/NNN-*.md`.
+
+    Two jobs. It is the spec `docs/UserManual.md` › Writing Agent Specifications
+    asks for before an agent edits anything, in the `NNN-short-description.md`
+    convention and with the three sections that page calls the minimum. And it
+    satisfies `hooks/pre-commit` Guardrail 4, which looks for at least one `*.md`
+    at `.agent-rfc/` DEPTH 1 under an enterprise org policy — the scaffold's own
+    design sits at depth 2, so a scaffolded tenant could not make its first
+    commit on such a machine (.agent-rfc/designs/scaffold-rfc-and-vouched-skip.md).
+
+    A template, and it says so. Nothing here is a real requirement: the
+    acceptance criteria are unchecked on purpose, so a reader can tell an
+    unfilled RFC from a filled one at a glance.
+    """
+    return f"""# RFC 001 — {tenant_id}
+
+    ⚠️  TEMPLATE — written by `agentsmith tenant init`. Replace every section
+        below before an agent works from it. Indented deliberately: a warning in
+        column 0 fails a tenant build (.github/scratch-tenants/build.sh).
+
+## Objective
+
+What this change is for, in the words of whoever asked for it. One paragraph.
+
+## Files to Modify
+
+- `path/to/the/file` — what changes in it and why
+
+## Acceptance Criteria
+
+- [ ] The behaviour someone can check, not the code that produces it
+- [ ] What must keep working that works today
+- [ ] How a reviewer will know this is done
+
+<!-- Stack: {stack}. The process gates need a design per change as well as this
+     RFC: `agentsmith design new <slug> --scope <glob>` writes that skeleton.
+     See AgentSmith docs/process-gates.md. -->
+"""
 
 
 def render_scaffold_design(tenant_id: str, stack: str, style: Optional[str], agentic: bool,

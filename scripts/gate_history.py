@@ -63,13 +63,15 @@ def record(root: Path, event: str, detail: str) -> None:
             if last.get("event") == event and last.get("detail") == detail \
                     and not last.get("hitl_resolved", True):
                 return
-        except json.JSONDecodeError:
+        except json.JSONDecodeError:  # fail-open: a corrupt last line must not
+            # stop the deduplication check; fall through and append.
             pass
     try:
         with log.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
-    except OSError:
-        pass  # a log that cannot be written must not break the hook that writes it
+    except OSError:  # fail-open: a log that cannot be written must not break the
+        # hook that writes it.
+        pass
 
 
 def _git_dir(root: Path) -> Optional[Path]:

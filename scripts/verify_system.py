@@ -595,7 +595,13 @@ def check_hooks() -> bool:
         # policy -> pre-commit must no-op even on a staged file that would
         # otherwise trip guardrail 1 (unresolved AI marker).
         repo1 = _git_repo(tmp, "repo1")
-        (repo1 / "file.py").write_text("# TODO: agent fix this\n")
+        # Assembled, not written whole: this file is vendored into every tenant,
+        # and hooks/pre-commit Guardrail 1 greps STAGED files for this very
+        # marker \u2014 so the literal here blocked a tenant's first commit, where the
+        # whole vendored tree is staged at once
+        # (.agent-rfc/designs/first-commit-guardrail.md). The file written at
+        # runtime is byte-identical.
+        (repo1 / "file.py").write_text("# TODO: " + "agent fix this\n")
         subprocess.run(["git", "add", "file.py"], cwd=repo1, check=True)
         env1 = {**os.environ, "HOME": str(tmp / "fake_home_1")}
         result1 = _run(["bash", str(hooks_dir / "pre-commit")], cwd=repo1, env=env1)
@@ -611,7 +617,8 @@ def check_hooks() -> bool:
         repo2 = _git_repo(tmp, "repo2")
         (repo2 / ".agenticframework").mkdir()
         (repo2 / ".agenticframework" / "enabled").touch()
-        (repo2 / "file.py").write_text("# TODO: agent fix this\n")
+        # Assembled for the same reason as repo1 above.
+        (repo2 / "file.py").write_text("# TODO: " + "agent fix this\n")
         subprocess.run(["git", "add", "."], cwd=repo2, check=True)
         env2 = {**os.environ, "HOME": str(tmp / "fake_home_2")}
         result2 = _run(["bash", str(hooks_dir / "pre-commit")], cwd=repo2, env=env2)

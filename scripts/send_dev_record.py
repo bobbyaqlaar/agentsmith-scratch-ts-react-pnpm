@@ -92,7 +92,8 @@ def main(argv: list[str]) -> int:
             reason = exc.read().decode("utf-8", "replace")[:500]
             try:
                 reason = json.loads(reason).get("error", reason)
-            except (ValueError, AttributeError):
+            except (ValueError, AttributeError):  # fail-open: the body was not the
+                # JSON we hoped for; keep the raw text already in `reason`.
                 pass
             if 400 <= exc.code < 500:
                 _say("error", f"the portal refused the gate's record ({exc.code}): {reason}")

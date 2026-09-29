@@ -624,6 +624,7 @@ CATALOGUE: tuple[Suite, ...] = (
         tests=(
             "scripts/test/test_hook_chain.py",
             "scripts/test/test_hook_visibility_override.py",
+            "scripts/test/test_vouched_files.py",
             "scripts/test/test_tenant_adopt.py",
             "scripts/test/test_scaffold_review.py",
             "scripts/test/test_installed_runtime_tenant.py",
@@ -639,9 +640,11 @@ CATALOGUE: tuple[Suite, ...] = (
             "scripts/process_gate.py",
             "scripts/gate_*.py",
             "scripts/generate-ide-config.py",
+            "scripts/vouched_files.py",
             "workflow-templates/agentsmith-gates.yml",
             "scripts/test/test_hook_chain.py",
             "scripts/test/test_hook_visibility_override.py",
+            "scripts/test/test_vouched_files.py",
             "scripts/test/test_tenant_adopt.py",
             "scripts/test/test_scaffold_review.py",
             "scripts/test/test_installed_runtime_tenant.py",
@@ -718,6 +721,19 @@ CATALOGUE: tuple[Suite, ...] = (
                 "runtime/cli.py",
                 "    written += _vendor(root, prior)\n",
                 "",
+            ),
+            Mutation(
+                "a vouch survives a tenant editing the file — the skip becomes a path "
+                "allowlist instead of a hash match",
+                "scripts/vouched_files.py",
+                "if path in blobs and hashlib.sha256(blobs[path]).hexdigest() == recorded[path]",
+                "if path in blobs",
+            ),
+            Mutation(
+                "a manifest that is not a mapping is trusted anyway",
+                "scripts/vouched_files.py",
+                "        if not isinstance(recorded, dict):\n            return []",
+                "        if False:\n            return []",
             ),
             Mutation(
                 "a declared AGENTSMITH_TENANT_VISIBILITY loses to detection — a public "
@@ -1023,8 +1039,9 @@ def _install_restore_handlers(target: Path, original: str) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             signal.signal(sig, _restore)
-        except (ValueError, OSError):  # pragma: no cover - non-main thread
-            pass
+        except (ValueError, OSError):  # fail-open: signal.signal only works on the
+            # main thread; without the handler an interrupt just skips the restore.
+            pass  # pragma: no cover - non-main thread
 
 
 def _pytest(tests: tuple[str, ...]) -> subprocess.CompletedProcess:
@@ -1095,8 +1112,9 @@ def run_suite(suite: Suite) -> list[str]:
             ):
                 try:
                     signal.signal(sig, handler)
-                except (ValueError, OSError):  # pragma: no cover
-                    pass
+                except (ValueError, OSError):  # fail-open: as above — not the main
+                    # thread, so there was no handler of ours to put back.
+                    pass  # pragma: no cover
 
         if result.returncode == 0:
             problems.append(

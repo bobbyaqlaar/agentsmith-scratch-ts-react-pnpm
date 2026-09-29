@@ -31,13 +31,20 @@ def run(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
     except Exception as exc:  # the harness aggregates; a raise loses every other control
         failures.append(f"fenced: {exc}")
 
+    # Not a fail-open: the raise IS this check passing, so the exception is captured
+    # and judged rather than handled. Written this way because an empty
+    # `except StructuredOutputError: pass` reads as a swallowed error to every
+    # reader and to scripts/check_bare_except.py, and the marker that silences it
+    # says "fail-open", which this is not.
+    raised: Exception | None = None
     try:
         parse_llm_json('{"answer":"ok"}', _SmokeModel)
-        failures.append("invalid schema did not raise")
-    except StructuredOutputError:
-        pass
     except Exception as exc:
-        failures.append(f"invalid schema wrong error: {exc}")
+        raised = exc
+    if raised is None:
+        failures.append("invalid schema did not raise")
+    elif not isinstance(raised, StructuredOutputError):
+        failures.append(f"invalid schema wrong error: {raised}")
 
     if failures:
         return ControlResult(

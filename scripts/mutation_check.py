@@ -488,6 +488,40 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="chosen_ides",
+        tests=("runtime/test/test_chosen_ides.py",),
+        mutations=(
+            Mutation(
+                "an unreadable declaration wires NO editor instead of every one — a "
+                "typo in tenant.yaml silently leaves the pre-edit gate unconsulted",
+                "runtime/config.py",
+                "    if not isinstance(declared, list):\n        return every",
+                "    if not isinstance(declared, list):\n        return ()",
+            ),
+            Mutation(
+                "a declaration naming nothing available returns empty rather than "
+                "falling back — `ides: [gemini]` disarms both verified editors",
+                "runtime/config.py",
+                "    return tuple(ide for ide in every if ide in declared) or every",
+                "    return tuple(ide for ide in every if ide in declared)",
+            ),
+            Mutation(
+                "the declaration is read from the cache again, so the file `tenant "
+                "init` writes mid-run is not seen and the choice is discarded",
+                "runtime/config.py",
+                'tenant_config(root, refresh=True).get("workspace")',
+                'tenant_config(root).get("workspace")',
+            ),
+            Mutation(
+                "the file's own strings reach the path instead of the framework's "
+                "constants — `ides` becomes an arbitrary path source",
+                "runtime/config.py",
+                "    return tuple(ide for ide in every if ide in declared) or every",
+                "    return tuple(declared) or every",
+            ),
+        ),
+    ),
+    Suite(
         name="config_choices",
         tests=("runtime/test/test_config_choices.py",),
         mutations=(

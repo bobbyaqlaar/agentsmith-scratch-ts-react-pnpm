@@ -233,6 +233,42 @@ def config_get(dotted: str, root: Optional[Path] = None) -> Any:
     return node
 
 
+def chosen_ides(root: Optional[Path], available: "Iterable[str]") -> tuple[str, ...]:
+    """Which IDEs get a generated hook config in this tenant — `workspace.ides`
+    in tenant.yaml, narrowed to `available` (`gate_ides.GENERATED`, the IDEs
+    whose config schema is verified).
+
+    Four commands write those configs — `tenant init`, `tenant adopt`,
+    `agentsmith sync` and `generate-ide-config.py --hooks` — and before this they
+    each read `GENERATED` directly, so a tenant on one IDE was given the other's
+    config and `sync` restored it on every run. The declaration has to be read by
+    all four or it is a declaration nothing reads, which is the failure this
+    module's own header is about.
+
+    Absent, empty, malformed, or naming nothing available -> all of `available`.
+    A declaration that cannot be read must leave every verified editor wired, not
+    none: the fallback direction is the safe one, and `tenant_config` has already
+    logged why the file could not be read.
+
+    Deliberately here and not beside `GENERATED` in scripts/gate_ides.py:
+    .githooks/process-gate imports that module on every edit, and the registry is
+    JSON precisely so hooks read it without pyyaml
+    (.agent-rfc/designs/governance-enforcement.md). All four callers are
+    provisioning commands; none of them is a hook.
+    """
+    every = tuple(available)
+    # refresh, not the cache: `tenant init` WRITES tenant.yaml earlier in this
+    # same process, so a cached read from before it existed would report no
+    # declaration and quietly restore the default.
+    workspace = tenant_config(root, refresh=True).get("workspace")
+    declared = workspace.get("ides") if isinstance(workspace, dict) else None
+    if not isinstance(declared, list):
+        return every
+    # Intersect in `available` order, so the result is the framework's own
+    # constants rather than strings the file supplied — these become paths.
+    return tuple(ide for ide in every if ide in declared) or every
+
+
 _OVERRIDES: dict[str, Any] = {}
 
 

@@ -482,7 +482,9 @@ def adopt(plan: Plan) -> list[str]:
     sys.path.insert(0, str(framework / "scripts"))
     import gate_ides  # type: ignore
 
-    for ide in gate_ides.GENERATED:
+    from runtime.config import chosen_ides
+
+    for ide in chosen_ides(root, gate_ides.GENERATED):
         rel = gate_ides.ADAPTERS[ide].config_path
         existing = json.loads((root / rel).read_text(encoding="utf-8")) if (root / rel).is_file() else None
         if existing is not None and ide != "claude":

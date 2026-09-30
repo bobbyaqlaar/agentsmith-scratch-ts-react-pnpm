@@ -240,8 +240,19 @@ def _hooks_mode(repo_root: Path, check_only: bool) -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import gate_ides as gi
 
+    # The tenant's declared choice, so this generator agrees with `tenant init`,
+    # `tenant adopt` and `agentsmith sync` instead of reporting the IDE they
+    # deliberately did not write as "missing".
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    try:
+        from runtime.config import chosen_ides
+
+        wanted = chosen_ides(repo_root, gi.GENERATED)
+    except Exception:  # fail-open: a checkout without runtime/ still generates
+        wanted = tuple(gi.GENERATED)
+
     problems = 0
-    for ide in gi.GENERATED:
+    for ide in wanted:
         target = repo_root / gi.ADAPTERS[ide].config_path
         existing = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else None
         expected = json.dumps(gi.render_config(ide, existing), indent=2, ensure_ascii=False) + "\n"

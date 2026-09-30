@@ -178,7 +178,9 @@ def _shared_files(plan: Plan) -> dict[str, str]:
     try:
         import gate_ides as gi  # type: ignore
 
-        for ide in gi.GENERATED:
+        from runtime.config import chosen_ides
+
+        for ide in chosen_ides(root, gi.GENERATED):
             rel = gi.ADAPTERS[ide].config_path
             here = root / rel
             existing = _json.loads(here.read_text(encoding="utf-8")) if here.is_file() else None

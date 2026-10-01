@@ -494,7 +494,8 @@ CATALOGUE: tuple[Suite, ...] = (
             Mutation(
                 "the token goes to any address, plain http included",
                 "runtime/intake.py",
-                '    return parsed.scheme == "https" or (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"))',
+                '    return parsed.scheme == "https" or '
+                '(parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"))',
                 "    return True",
             ),
             Mutation(

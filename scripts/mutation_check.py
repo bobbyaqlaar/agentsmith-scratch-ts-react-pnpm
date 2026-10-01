@@ -488,6 +488,26 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="send_dev_record",
+        tests=("scripts/test/test_send_dev_record.py",),
+        mutations=(
+            Mutation(
+                "redirects are followed — and urllib carries the ingest token to wherever they point",
+                "scripts/send_dev_record.py",
+                "_OPENER = urllib.request.build_opener(_NoRedirect)",
+                "_OPENER = urllib.request.build_opener()",
+            ),
+            Mutation(
+                "a redirect reads as a warning, so a green build hides a misconfigured address",
+                "scripts/send_dev_record.py",
+                "                          \"with it. Set AGENTSMITH_PORTAL_URL to the portal's final address.\")\n"
+                "            return 1",
+                "                          \"with it. Set AGENTSMITH_PORTAL_URL to the portal's final address.\")\n"
+                "            return 0",
+            ),
+        ),
+    ),
+    Suite(
         name="intake",
         tests=("runtime/test/test_intake.py",),
         mutations=(

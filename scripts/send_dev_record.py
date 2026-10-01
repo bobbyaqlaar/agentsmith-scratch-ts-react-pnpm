@@ -17,7 +17,10 @@ How it ends, and why:
   record or the token is wrong, and nobody learns it from a green tick;
 - the portal is unreachable or failing (5xx) → a warning, exit 0: the gate's
   verdict stands on its own, and the next push sends the record again;
-- a plain-http portal other than localhost → refused before the token is sent.
+- a plain-http portal other than localhost → refused before the token is sent;
+- a portal address that redirects → refused before a second request exists,
+  because urllib copies the Authorization header onto the redirected request:
+  the token would go wherever the redirect points.
 """
 
 from __future__ import annotations
@@ -31,6 +34,23 @@ from urllib.parse import urlparse
 
 # The portal's per-request limit (portal/lib/devIngest.ts DEV_LIMITS.commits).
 CHUNK = 500
+
+
+class _Redirected(Exception):
+    pass
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses instead of following: urllib's redirect_request copies the
+    Authorization header onto the next request, so following would hand the
+    ingest token to wherever the redirect points. The same opener
+    runtime/intake.py uses (.agent-rfc/designs/send-dev-record-redirects.md)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        raise _Redirected(f"{code} to {newurl}")
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _say(level: str, text: str) -> None:
@@ -86,8 +106,14 @@ def main(argv: list[str]) -> int:
             headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with _OPENER.open(request, timeout=30) as response:
                 stored += json.loads(response.read() or b"{}").get("stored", 0)
+        except _Redirected as exc:
+            # The operator's fix, not an outage: a warning here would let a green
+            # build hide that every record since was going nowhere.
+            _say("error", f"the portal redirected ({exc}) — not following it, because the token would go "
+                          "with it. Set AGENTSMITH_PORTAL_URL to the portal's final address.")
+            return 1
         except urllib.error.HTTPError as exc:
             reason = exc.read().decode("utf-8", "replace")[:500]
             try:

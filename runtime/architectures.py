@@ -187,7 +187,7 @@ def _scaffold_answers(stack: str, style: Optional[str], agentic: bool, adopted: 
     }
 
 
-def render_scaffold_rfc(tenant_id: str, stack: str) -> str:
+def render_scaffold_rfc(tenant_id: str, stack: str, intake: Optional[dict] = None) -> str:
     """The tenant's first RFC, at `.agent-rfc/NNN-*.md`.
 
     Two jobs. It is the spec `docs/UserManual.md` › Writing Agent Specifications
@@ -201,7 +201,36 @@ def render_scaffold_rfc(tenant_id: str, stack: str) -> str:
     A template, and it says so. Nothing here is a real requirement: the
     acceptance criteria are unchecked on purpose, so a reader can tell an
     unfilled RFC from a filled one at a glance.
+
+    With `intake` — the `rfc` of a portal intake, already validated by
+    runtime/intake.py — it is the author's RFC instead: the same three sections
+    at the same path, filled, and without the TEMPLATE banner, because it is no
+    longer one (.agent-rfc/designs/portal-intake-pull.md). The author's text is
+    the Markdown body and nothing else: it reaches no YAML, workflow or shell.
     """
+    if intake is not None:
+        files = ("\n".join(f"- {f}" for f in intake["files_to_modify"])
+                 or "- None named yet — add them before an agent works from this.")
+        criteria = "\n".join(f"- [ ] {c}" for c in intake["acceptance_criteria"])
+        return f"""# RFC 001 — {tenant_id}
+
+## Objective
+
+{intake["objective"]}
+
+## Files to Modify
+
+{files}
+
+## Acceptance Criteria
+
+{criteria}
+
+<!-- Written by `agentsmith tenant init --from` from the author's portal intake.
+     Stack: {stack}. The process gates need a design per change as well as this
+     RFC: `agentsmith design new <slug> --scope <glob>` writes that skeleton.
+     See AgentSmith docs/process-gates.md. -->
+"""
     return f"""# RFC 001 — {tenant_id}
 
     ⚠️  TEMPLATE — written by `agentsmith tenant init`. Replace every section

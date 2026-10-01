@@ -14,6 +14,7 @@ extend-exclude = [
   "environment.py",
   "idempotency.py",
   "input_guardrail.py",
+  "intake.py",
   "judging.py",
   "k8s/dedicated-tenant/README.md",
   "k8s/dedicated-tenant/configmap.yaml",

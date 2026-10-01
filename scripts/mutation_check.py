@@ -488,6 +488,78 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="intake",
+        tests=("runtime/test/test_intake.py",),
+        mutations=(
+            Mutation(
+                "the token goes to any address, plain http included",
+                "runtime/intake.py",
+                '    return parsed.scheme == "https" or (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"))',
+                "    return True",
+            ),
+            Mutation(
+                "redirects are followed — and urllib carries the Authorization header with them",
+                "runtime/intake.py",
+                "_OPENER = urllib.request.build_opener(_NoRedirect)",
+                "_OPENER = urllib.request.build_opener()",
+            ),
+            Mutation(
+                "the token is in the Intake's repr, so a traceback or a debug print shows it",
+                "runtime/intake.py",
+                "    _token: str = field(repr=False)",
+                '    _token: str = ""',
+            ),
+            Mutation(
+                "an intake id reaches the URL unchecked — `--from ../admin` becomes a path",
+                "runtime/intake.py",
+                "    if not INTAKE_ID.match(intake_id):",
+                "    if False:",
+            ),
+            Mutation(
+                "a tenant id the portal could never register is scaffolded anyway",
+                "runtime/intake.py",
+                "    if not APP_ID.match(tenant_id):",
+                "    if False:",
+            ),
+            Mutation(
+                "the stack is trusted because the portal accepted it",
+                "runtime/intake.py",
+                '    if record["stack"] not in STACKS:',
+                "    if False:",
+            ),
+            Mutation(
+                "fields the CLI does not know are accepted silently",
+                "runtime/intake.py",
+                "    if unknown or missing:",
+                "    if missing:",
+            ),
+            Mutation(
+                "a newline in an acceptance criterion starts a heading of its own in the RFC",
+                "runtime/intake.py",
+                '    return [" ".join(_clean(v, LIMITS["item"], field).split()) for v in value]',
+                '    return [_clean(v, LIMITS["item"], field) for v in value]',
+            ),
+            Mutation(
+                "a portal that is down reads as something the author must change, not a retry",
+                "runtime/intake.py",
+                "        if exc.code >= 500:",
+                "        if False:",
+            ),
+            Mutation(
+                "an intake is consumed though its RFC never landed — the author's text is lost",
+                "runtime/cli.py",
+                '    if not (landed.is_file() and landed.read_text(encoding="utf-8") == expected):',
+                "    if False:",
+            ),
+            Mutation(
+                "--from and a flag it decides are both accepted, and one silently wins",
+                "runtime/cli.py",
+                "        if args.tenant_id is not None or given:",
+                "        if False:",
+            ),
+        ),
+    ),
+    Suite(
         name="chosen_ides",
         tests=("runtime/test/test_chosen_ides.py",),
         mutations=(

@@ -287,6 +287,7 @@ def init_tenant(
     architecture: Optional[str] = None,
     agentic: bool = False,
     ides: Optional[Sequence[str]] = None,
+    rfc: Optional[dict] = None,
 ) -> list[str]:
     """Scaffold a tenant. Returns the paths written, relative to `root`.
 
@@ -395,7 +396,7 @@ def init_tenant(
         prior=prior,
     )
     written += _vendor(root, prior)
-    written += write_scaffold_records(root, tenant_id, stack, style, agentic, written, force)
+    written += write_scaffold_records(root, tenant_id, stack, style, agentic, written, force, rfc=rfc)
     return written
 
 
@@ -449,7 +450,8 @@ def _scaffold_files(root: Path, written: list[str]) -> list[str]:
 
 def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Optional[str], agentic: bool,
                            written: list[str], force: bool, design: str = SCAFFOLD_DESIGN,
-                           adopted: bool = False, generated_by: Optional[str] = None) -> list[str]:
+                           adopted: bool = False, generated_by: Optional[str] = None,
+                           rfc: Optional[dict] = None) -> list[str]:
     """The design for the commit that arms the gates, and the manifest that
     lets its review be `n/a: generated scaffold` (scripts/process_gate.py
     scaffold_problems) — for `tenant init`, or `tenant adopt` when `adopted`.
@@ -476,7 +478,7 @@ def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Option
         from runtime import architectures
 
         rfc_path.parent.mkdir(parents=True, exist_ok=True)
-        rfc_path.write_text(architectures.render_scaffold_rfc(tenant_id, stack), encoding="utf-8")
+        rfc_path.write_text(architectures.render_scaffold_rfc(tenant_id, stack, rfc), encoding="utf-8")
         written = [*written, SCAFFOLD_RFC]
 
     files = _scaffold_files(root, written)
@@ -776,8 +778,64 @@ def _rfc_reference(root: Path) -> Optional[str]:
     return None
 
 
+# What a portal intake decides, so --from refuses each of them rather than
+# letting one silently win over the other.
+_INTAKE_FLAGS = (("--stack", "stack"), ("--isolation", "isolation"), ("--architecture", "architecture"),
+                 ("--agentic", "agentic"), ("--ide", "ide"))
+
+
 def _cmd_tenant_init(args: argparse.Namespace) -> int:
+    """`agentsmith tenant init` — from arguments, or from a portal intake
+    (`--from`; runtime/intake.py), which is fetched and validated first and
+    consumed only once the scaffold, its RFC included, has landed."""
+    intake = None
+    if args.from_intake is not None:
+        given = [flag for flag, attr in _INTAKE_FLAGS if getattr(args, attr)]
+        if args.tenant_id is not None or given:
+            print(f"agentsmith: --from takes the tenant id and its options from the intake; drop "
+                  f"{', '.join(([args.tenant_id] if args.tenant_id else []) + given)}", file=sys.stderr)
+            return 2
+        from runtime import intake as intakes
+
+        try:
+            intake = intakes.fetch(args.from_intake)
+        except intakes.IntakeError as exc:
+            print(f"agentsmith: {exc}", file=sys.stderr)
+            return exc.exit_code
+        record = intake.record
+        args.tenant_id, args.stack, args.isolation = record["tenant_id"], record["stack"], record["isolation"]
+        args.architecture, args.agentic, args.ide = record["architecture"], record["agentic"], record["ides"] or None
+        print(f"Intake {record['intake_id']}: tenant '{args.tenant_id}' — scaffolding it here.")
+    elif args.tenant_id is None:
+        print("agentsmith: give the tenant's id, or --from <intake> to take it from a portal intake", file=sys.stderr)
+        return 2
+    args.stack = args.stack or "python-fastapi"
+    args.isolation = args.isolation or "shared"
+
     root = Path(args.root).resolve() if args.root else Path.cwd()
+    code = _scaffold_tenant(args, root, intake.record["rfc"] if intake else None)
+    if code != 0 or intake is None:
+        return code
+    # Consume only once the intake has fully landed. The scaffold never
+    # overwrites an RFC, so in a repository that already had one the author's
+    # text was not written — and consuming would burn the only copy of it.
+    from runtime import architectures
+
+    expected = architectures.render_scaffold_rfc(args.tenant_id, args.stack, intake.record["rfc"])
+    landed = root / SCAFFOLD_RFC
+    if not (landed.is_file() and landed.read_text(encoding="utf-8") == expected):
+        # --force does not help: write_scaffold_records never writes an RFC
+        # beside an existing one, forced or not.
+        blocking = ", ".join(p.relative_to(root).as_posix() for p in sorted(root.glob(".agent-rfc/*.md"))) or "an RFC"
+        print(f"\n  ⚠️  The intake's RFC was not written: {blocking} was already here, and the scaffold never "
+              f"writes an RFC beside another. Intake {intake.record['intake_id']} is left unused so its text is "
+              f"not lost — move {blocking} out of .agent-rfc/, run the same command again, then merge the two.")
+        return 0
+    print(intake.consume())
+    return 0
+
+
+def _scaffold_tenant(args: argparse.Namespace, root: Path, intake_rfc: Optional[dict]) -> int:
     try:
         written = init_tenant(
             args.tenant_id,
@@ -789,6 +847,7 @@ def _cmd_tenant_init(args: argparse.Namespace) -> int:
             architecture=args.architecture,
             agentic=args.agentic,
             ides=args.ide,
+            rfc=intake_rfc,
         )
     except FrameworkRootError as exc:
         print(f"agentsmith: refusing to scaffold here.\n{exc}", file=sys.stderr)
@@ -1175,9 +1234,21 @@ def build_parser() -> argparse.ArgumentParser:
         dest="tenant_command", required=True
     )
     init = tenant.add_parser("init", help="scaffold .agenticframework/ and CI workflows")
-    init.add_argument("tenant_id")
-    init.add_argument("--stack", default="python-fastapi", choices=list(STACKS))
-    init.add_argument("--isolation", default="shared", choices=list(ISOLATIONS))
+    init.add_argument("tenant_id", nargs="?", default=None,
+                      help="the tenant's id — or omit it and give --from, whose intake names it")
+    init.add_argument(
+        "--from",
+        dest="from_intake",
+        default=None,
+        metavar="INTAKE",
+        help="scaffold from a portal intake: its stack, options, IDEs and first RFC. Reads "
+        "AGENTSMITH_PORTAL_URL, and AGENTSMITH_INTAKE_TOKEN (asked for at a terminal when unset)",
+    )
+    # Defaults of None, applied in _cmd_tenant_init, so that a flag the author
+    # actually typed can be told from one they did not — which --from needs to
+    # refuse rather than silently override.
+    init.add_argument("--stack", default=None, choices=list(STACKS), help="default: python-fastapi")
+    init.add_argument("--isolation", default=None, choices=list(ISOLATIONS), help="default: shared")
     init.add_argument(
         "--architecture",
         default=None,

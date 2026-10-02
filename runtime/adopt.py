@@ -36,7 +36,10 @@ ADOPTION_DESIGN = ".agent-rfc/designs/adoption.md"
 PROVIDERS = ".agenticframework/providers.json"
 # The contract version a repository adopted today speaks, and this framework's
 # own major as the range it expects (contract/gate/v1/protocol.md).
-GATE_CONTRACT = 1
+GATE_CONTRACT = 2
+# AgentSmith's own CI setup step: what a tenant pins to pin the provider in CI
+# (contract/gate/v2/protocol.md, .agent-rfc/designs/gate-contract-ci.md).
+SETUP_ACTION = "bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith"
 GATES_WORKFLOW = ".github/workflows/agentsmith-gates.yml"
 # Weekly, it brings the repository up to the framework's latest release and
 # opens a pull request (.agent-rfc/designs/sync-pull-request.md). Written here
@@ -370,20 +373,47 @@ def generated_by_agentsmith(text: str) -> bool:
     return any("Auto-generated" in line and "agent-rules.yaml" in line for line in head)
 
 
-def providers_declaration(command: str = "agentsmith gate") -> str:
-    """Who governs this repository, as `contract/gate/v1/providers.schema.json`
-    describes it. Named rather than implied: the hooks ask the declaration, and
-    another platform's command goes here instead
-    (.agent-rfc/designs/provider-resolution.md)."""
+def setup_reference(ref: Optional[str] = None) -> str:
+    """AgentSmith's CI setup step at `ref` (default: this release)."""
+    from runtime.cli import _default_framework_version
+
+    return f"{SETUP_ACTION}@{ref or 'v' + _default_framework_version()}"
+
+
+def declared_setup(root: Path) -> Optional[str]:
+    """The `setup` this repository's declaration names for its gate, if any."""
+    try:
+        gate = json.loads((root / PROVIDERS).read_text(encoding="utf-8"))["providers"]["gate"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    setup = gate.get("setup") if isinstance(gate, dict) else None
+    return setup if isinstance(setup, str) and setup else None
+
+
+def workflow_setup(root: Path, ref: Optional[str] = None) -> str:
+    """The setup step the gates workflow runs: another provider's, as declared,
+    and never rewritten; AgentSmith's own, at `ref` — so a sync to a new release
+    moves the tenant's CI to it."""
+    declared = declared_setup(root)
+    if declared and not declared.startswith(SETUP_ACTION + "@"):
+        return declared
+    return setup_reference(ref)
+
+
+def providers_declaration(command: str = "agentsmith gate", setup: Optional[str] = None) -> str:
+    """Who governs this repository, as `contract/gate/v2/providers.schema.json`
+    describes it. Named rather than implied: the hooks and CI ask the
+    declaration, and another platform's command goes here instead
+    (.agent-rfc/designs/provider-resolution.md, gate-contract-ci.md)."""
     from runtime.cli import _default_framework_version
 
     major = _default_framework_version().split(".")[0]
     return json.dumps({
-        "_about": "Who governs this repository. The hooks ask this before they ask the framework's own "
-                  "paths; `\"gate\": \"none\"` declares the repository ungoverned. See "
-                  "contract/gate/v1/protocol.md.",
+        "_about": "Who governs this repository. The hooks and CI ask this before anything else; "
+                  "`\"gate\": \"none\"` declares the repository ungoverned. See "
+                  "contract/gate/v2/protocol.md.",
         "contract": GATE_CONTRACT,
-        "providers": {"gate": {"command": command, "version": f"^{major}"}},
+        "providers": {"gate": {"command": command, "version": f"^{major}", "setup": setup or setup_reference()}},
     }, indent=2) + "\n"
 
 
@@ -475,7 +505,7 @@ def adopt(plan: Plan) -> list[str]:
     put(".agenticframework/process-gates.json",
         _process_gates_config(plan.stack, architectures.session_start_line(plan.style, plan.agentic), plan.gated))
     if not (root / PROVIDERS).exists():
-        put(PROVIDERS, providers_declaration())
+        put(PROVIDERS, providers_declaration(setup=setup_reference(plan.framework_ref)))
 
     written += install_gate_hooks(root, framework, prior=plan.prior_hooks, provisioning=False)
 
@@ -511,7 +541,8 @@ def adopt(plan: Plan) -> list[str]:
         if template is None:
             print(f"  ! {name} template not found — re-run install-ai-stack.sh", file=sys.stderr)
             continue
-        put(workflow, template.read_text(encoding="utf-8").replace("{{FRAMEWORK_REF}}", plan.framework_ref))
+        put(workflow, template.read_text(encoding="utf-8").replace(
+            "{{PROVIDER_SETUP}}", setup_reference(plan.framework_ref)))
 
     graph = ".agent-rfc/fixtures/knowledge_graph.json"
     mapper = framework / "scripts" / "map_codebase.py"

@@ -74,6 +74,12 @@ else:
         UNUSABLE = f"{sys.executable} cannot import the gate's models or tracing ({type(_exc).__name__}: {_exc})"
 
 CONFIG = ".agenticframework/process-gates.json"
+PROVIDERS_FILE = ".agenticframework/providers.json"
+# Governed whatever a config lists: together they decide whether anything is
+# governed at all — the config what, the declaration who, and under gate
+# contract 2 whether CI checks anything. An unreviewed `"gate": "none"` must not
+# be possible (.agent-rfc/designs/gate-contract-ci.md).
+ALWAYS_GOVERNED = (CONFIG, PROVIDERS_FILE)
 DESIGNS_DIR = ".agent-rfc/designs"
 REVIEWS_DIR = ".agent-rfc/reviews"
 FRAMEWORK_PREFIX = "@framework/"
@@ -184,7 +190,11 @@ class Config:
         errors = []
         if not self.gated:
             errors.append(f"{CONFIG} declares no gated paths")
-        elif not self.is_gated(CONFIG):
+        elif not self.lists(CONFIG):
+            # Asked of the config's own lists, not of `is_gated`: this gate governs the
+            # config whatever it says, but an older copy of the gate does not, and a
+            # config should say what the gate does. The declaration is not asked for
+            # here — every config adopted before it was always governed would fail.
             errors.append(f"{CONFIG} must gate itself, or the gates can be switched off unreviewed")
         if self.changelog_file and not self.changelog_paths:
             errors.append(f"{CONFIG} names a changelog file but no paths that require it")
@@ -211,6 +221,10 @@ class Config:
             return None, [f"the rules registry {self.display(self.registry)} is invalid: {exc}"]
 
     def is_gated(self, path: str) -> bool:
+        return path in ALWAYS_GOVERNED or self.lists(path)
+
+    def lists(self, path: str) -> bool:
+        """What this config itself says is gated — before `ALWAYS_GOVERNED`."""
         return _any(path, self.gated) and not _any(path, self.not_gated)
 
     def needs_changelog(self, path: str) -> bool:
@@ -1336,6 +1350,16 @@ def check_commits(root: Path, commits: List[str], records: Optional[List[Dict[st
 
 
 def cmd_ci(base: str, head: str, json_path: Optional[str] = None) -> int:
+    code, report, annotations, _document = ci_verdict(base, head, record=bool(json_path), json_path=json_path)
+    _report(report, annotations)
+    return code
+
+
+def ci_verdict(base: str, head: str, record: bool = False, json_path: Optional[str] = None
+               ) -> Tuple[int, List[str], List[str], Optional[Dict[str, object]]]:
+    """The range's verdict — exit code, report lines, annotations — and, with
+    `record`, the dev record. One run for both callers: `ci` prints it, and the
+    contract-2 answer (`ci --decision`) returns it as a decision."""
     root = repo_root()
     head_config, head_problems = parse_config(_reader_at(root, head)(CONFIG))
     if head_config is None or head_problems:
@@ -1343,14 +1367,14 @@ def cmd_ci(base: str, head: str, json_path: Optional[str] = None) -> int:
             f"{CONFIG} is missing at {head[:12]} — this CI runs the process gate, so the repo adopted it, "
             "and a missing config means the gates were removed"
         )
-        _report(["## Process gates", "", f"- ❌ {why}"], [f"::error title=Process gate::{why}"])
-        return 1
+        return 1, ["## Process gates", "", f"- ❌ {why}"], [f"::error title=Process gate::{why}"], None
 
     commits, caveat = _range_commits(root, base, head)
-    records: Optional[List[Dict[str, object]]] = [] if json_path else None
+    records: Optional[List[Dict[str, object]]] = [] if record else None
     failures, escapes, unadopted, range_files, gated_commits = check_commits(root, commits, records)
-    if json_path:
-        # Written whatever the verdict: a failed range is exactly what the Dev
+    document: Optional[Dict[str, object]] = None
+    if record:
+        # Built whatever the verdict: a failed range is exactly what the Dev
         # workspace has to show.
         head_sha = git("rev-parse", "--verify", f"{head}^{{commit}}", cwd=root).strip()
         document = {
@@ -1365,7 +1389,8 @@ def cmd_ci(base: str, head: str, json_path: Optional[str] = None) -> int:
         run = [os.environ.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID")]
         if all(run):
             document["ci_run_url"] = f"{run[0]}/{run[1]}/actions/runs/{run[2]}"
-        Path(json_path).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        if json_path:
+            Path(json_path).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
     changelog_error = None
     needing = sorted(f for f in range_files if head_config.needs_changelog(f))
@@ -1398,8 +1423,33 @@ def cmd_ci(base: str, head: str, json_path: Optional[str] = None) -> int:
     annotations = [f"::error title=Process gate {c[:10]}::{e}" for c, _s, errs in failures for e in errs]
     if changelog_error:
         annotations.append(f"::error title=Process gate::{changelog_error}")
-    _report(report, annotations)
-    return 1 if failures or changelog_error or art_code else 0
+    return (1 if failures or changelog_error or art_code else 0), report, annotations, document
+
+
+def cmd_ci_decision(base: str, head: str) -> int:
+    """The `ci` event of gate contract 2 (contract/gate/v2/protocol.md): the
+    same verdict as `ci`, answered as one decision on stdout. The record goes
+    to the portal from here when it is configured, so a tenant's workflow has
+    no record step; a portal that refuses it fails the answer, as the record
+    step failed the job, so a wrong token cannot hide behind a green check
+    (.agent-rfc/designs/gate-contract-ci.md)."""
+    import send_dev_record
+
+    code, report, annotations, document = ci_verdict(base, head, record=True)
+    said: List[Tuple[str, str]] = []
+    sent = send_dev_record.send(document, lambda level, text: said.append((level, text))) if document else 0
+    report = [*report, "", *(f"- record: {text}" for _level, text in said)]
+    annotations = [*annotations, *(f"::{level} title=Gate record::{text}" for level, text in said
+                                   if level in ("error", "warning"))]
+    if code:
+        text = "the range does not pass the process gate — see the report"
+    elif sent:
+        text = "the range passes the process gate, but the portal refused its record — see the report"
+    else:
+        text = "the range passes the process gate"
+    print(gm.DecisionV2(decision="deny" if code or sent else "allow", text=text,
+                        report="\n".join(report), annotations=annotations).model_dump_json())
+    return 0
 
 
 
@@ -1976,6 +2026,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ci.add_argument("--head", default="HEAD")
     ci.add_argument("--json", dest="json_path", default=None,
                     help="also write what was decided about each commit to this file (the portal's Dev ingest)")
+    ci.add_argument("--decision", action="store_true",
+                    help="answer as gate contract 2: one decision on stdout, the record sent from here")
     args = parser.parse_args(argv)
 
     if args.command == "artifacts":
@@ -2007,6 +2059,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _traced("sweep", repo_root(), lambda: cmd_sweep(args.report))
     if args.command == "commit-msg":
         return _traced("commit-msg", repo_root(), lambda: cmd_commit_msg(args.message_file, amend=args.amend))
+    if args.decision:
+        # The event arrives on stdin, as every contract event does; --base and
+        # --head are the fallback for a caller running the gate by hand.
+        raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+        base, head = args.base, args.head
+        if raw.strip():
+            try:
+                event = gm.GateEventV2.model_validate_json(raw)
+                if event.kind != "range":
+                    raise ValueError(f"kind is {event.kind!r}, and `ci` asks about a range")
+            except ValueError as exc:  # pydantic's ValidationError is a ValueError
+                print(gm.DecisionV2(decision="deny",
+                                    text=f"not a range event (contract/gate/v2/event.schema.json): {exc}"
+                                    ).model_dump_json())
+                return 0
+            base, head = event.base or "", event.head or "HEAD"
+        return _traced("ci", repo_root(), lambda: cmd_ci_decision(base, head))
     return _traced("ci", repo_root(), lambda: cmd_ci(args.base, args.head, args.json_path))
 
 

@@ -187,7 +187,8 @@ def _shared_files(plan: Plan) -> dict[str, str]:
     import json as _json
     import sys as _sys
 
-    from runtime.adopt import GATES_WORKFLOW, SYNC_WORKFLOW, generated_rules
+    from runtime.adopt import GATES_WORKFLOW, PROVIDERS, SYNC_WORKFLOW, generated_rules, providers_declaration, \
+        workflow_setup
 
     root, framework = plan.root, plan.framework
     shared: dict[str, str] = dict(generated_rules(root, framework, plan.stack))
@@ -209,11 +210,17 @@ def _shared_files(plan: Plan) -> dict[str, str]:
     for workflow in (GATES_WORKFLOW, SYNC_WORKFLOW):
         template = _workflow_template(framework, Path(workflow).name)
         if template is not None and (root / workflow).is_file():
-            # The gates workflow carries the release it runs, so a tenant that
-            # upgrades starts running the new provider in CI; the sync workflow
-            # follows the latest release and has nothing to substitute.
+            # The gates workflow carries the provider's setup step, pinned, so a
+            # tenant that syncs starts running the new release in CI — unless it
+            # declares another provider's step, which is never rewritten. The
+            # sync workflow follows the latest release and has nothing to substitute.
             shared[workflow] = template.read_text(encoding="utf-8").replace(
-                "{{FRAMEWORK_REF}}", f"v{plan.version}")
+                "{{PROVIDER_SETUP}}", workflow_setup(root, f"v{plan.version}"))
+    # The declaration itself, moved to gate contract 2 while it is the one the
+    # framework wrote; a tenant that edited it — another provider, `none` — owns
+    # it, and `ownership` leaves it alone and says so.
+    if (root / PROVIDERS).is_file():
+        shared[PROVIDERS] = providers_declaration(setup=workflow_setup(root, f"v{plan.version}"))
     return shared
 
 

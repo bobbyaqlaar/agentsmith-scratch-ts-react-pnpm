@@ -1,0 +1,34 @@
+# AgentSmith as a gate provider in CI (contract/gate/v2/protocol.md).
+#
+# A tenant's gates workflow runs this at a pinned release —
+#   uses: bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith@v2.1.0
+# — and then asks `agentsmith gate ci` through its own launcher. Everything
+# comes from the repository at the action's own ref, which the runner has
+# already fetched: the gate, its requirements and the CLI. Nothing checks
+# AgentSmith out at a branch, and the tenant holds none of it
+# (.agent-rfc/designs/gate-contract-ci.md).
+name: "Set up AgentSmith (gate provider)"
+description: "Puts the `agentsmith` gate provider of this release on PATH, with the environment the gate runs in."
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: "AgentSmith, from this action's release"
+      shell: bash
+      run: |
+        set -euo pipefail
+        root="$(cd "${{ github.action_path }}/../../.." && pwd)"
+        python -m pip install --quiet --disable-pip-version-check -r "$root/scripts/requirements-gate.txt"
+        bin="${RUNNER_TEMP}/agentsmith-provider/bin"
+        mkdir -p "$bin"
+        # The CLI run from this release's own source, on PATH as `agentsmith`:
+        # what the declaration's `agentsmith gate` command resolves to.
+        printf '#!/usr/bin/env bash\nPYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}" exec "%s" -m runtime.cli "$@"\n' \
+          "$root" "$(command -v python)" > "$bin/agentsmith"
+        chmod +x "$bin/agentsmith"
+        echo "$bin" >> "$GITHUB_PATH"
+        echo "AGENTSMITH_DIR=$root" >> "$GITHUB_ENV"
+        echo "AGENTSMITH_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+        "$bin/agentsmith" version

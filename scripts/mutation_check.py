@@ -1059,7 +1059,8 @@ CATALOGUE: tuple[Suite, ...] = (
             Mutation(
                 "adopt stops declaring who governs the repository",
                 "runtime/adopt.py",
-                "    if not (root / PROVIDERS).exists():\n        put(PROVIDERS, providers_declaration())",
+                "    if not (root / PROVIDERS).exists():\n"
+                "        put(PROVIDERS, providers_declaration(setup=setup_reference(plan.framework_ref)))",
                 "    pass",
             ),
             Mutation(
@@ -1073,6 +1074,59 @@ CATALOGUE: tuple[Suite, ...] = (
 
     # .agent-rfc/designs/framework-sync.md — one command keeps a tenant current,
     # and the tenant's own gates accept the commit it prints.
+    # .agent-rfc/designs/gate-contract-ci.md — gate contract 2: a tenant's CI
+    # asks its declared provider, and a check with no decision never falls back.
+    Suite(
+        name="gate_contract_v2",
+        tests=(
+            "scripts/test/test_gate_contract_v2.py",
+            "scripts/test/test_gate_contract.py",
+        ),
+        mutations=(
+            Mutation(
+                "ci at contract 2 falls back to the framework's own gate when the provider gives no decision",
+                ".githooks/process-gate",
+                'if [ "$(declared_contract)" -ge 2 ]; then',
+                "if false; then",
+            ),
+            Mutation(
+                "the launcher reads every declaration as contract 1",
+                ".githooks/process-gate",
+                '  echo "${n:-1}"',
+                "  echo 1",
+            ),
+            Mutation(
+                "a range the provider refused passes CI",
+                ".githooks/process-gate",
+                'if decision == "allow":',
+                'if decision in ("allow", "deny"):',
+            ),
+            Mutation(
+                "anything is put into the range event as a ref",
+                ".githooks/process-gate",
+                "      *[!A-Za-z0-9._/~^@{}-]*)",
+                "      __never_a_ref__)",
+            ),
+            Mutation(
+                "a portal that refuses the record no longer fails the answer — a wrong token hides behind green",
+                "scripts/process_gate.py",
+                'decision="deny" if code or sent else "allow"',
+                'decision="deny" if code else "allow"',
+            ),
+            Mutation(
+                "a ci event that is not a range is judged anyway",
+                "scripts/process_gate.py",
+                '                if event.kind != "range":',
+                "                if False:",
+            ),
+            Mutation(
+                "the declaration is governed only when a config lists it — an unreviewed `none` turns CI off",
+                "scripts/process_gate.py",
+                "        return path in ALWAYS_GOVERNED or self.lists(path)",
+                "        return self.lists(path)",
+            ),
+        ),
+    ),
     Suite(
         name="framework_sync",
         tests=(
@@ -1187,6 +1241,24 @@ CATALOGUE: tuple[Suite, ...] = (
                 "runtime/cli.py",
                 "        after = architectures.extend_design_scope(before, [*written, SCAFFOLD_MANIFEST])",
                 "        after = before",
+            ),
+            Mutation(
+                "sync rewrites another provider's declared setup step to AgentSmith's",
+                "runtime/adopt.py",
+                '    if declared and not declared.startswith(SETUP_ACTION + "@"):',
+                "    if False:",
+            ),
+            Mutation(
+                "sync never moves an untouched declaration to contract 2",
+                "runtime/sync.py",
+                "    if (root / PROVIDERS).is_file():",
+                "    if False:",
+            ),
+            Mutation(
+                "adopt declares gate contract 1, so a new tenant's CI never asks its provider",
+                "runtime/adopt.py",
+                "GATE_CONTRACT = 2\n",
+                "GATE_CONTRACT = 1\n",
             ),
             Mutation(
                 "a scaffold design leaves out the manifest committed beside it",

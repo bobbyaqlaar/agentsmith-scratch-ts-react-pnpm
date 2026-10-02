@@ -128,6 +128,26 @@ class Decision(_Frozen):
     text: str = ""
 
 
+class GateEventV2(GateEvent):
+    """A gate event in contract 2 (contract/gate/v2/): v1's, plus `range` —
+    the commits from `base` to `head`, which the `ci` event asks about. A
+    `base` of all zeros is a new branch: the head commit alone. v1's model is
+    left as it was, because contract/gate/v1/ is published and still served."""
+
+    kind: Literal["edit", "shell", "other", "range"]
+    base: str | None = None
+    head: str | None = None
+
+
+class DecisionV2(Decision):
+    """A contract-2 answer. The four decisions are v1's; `report` (markdown)
+    and `annotations` (one problem a line) are for the person reading CI, and a
+    provider with nothing more than the verdict to say leaves both empty."""
+
+    report: str = ""
+    annotations: list[str] = Field(default_factory=list)
+
+
 class Ide(_Frozen):
     """One IDE's hook wiring, as the registry declares it."""
 

@@ -30,6 +30,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 # The portal's per-request limit (portal/lib/devIngest.ts DEV_LIMITS.commits).
@@ -82,20 +83,32 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(__doc__.strip().splitlines()[0])
         return 2
+    try:
+        document: Optional[dict] = json.loads(open(argv[1], encoding="utf-8").read())
+        unread = ""
+    except (OSError, json.JSONDecodeError) as exc:
+        document, unread = None, str(exc)
+    return send(document, _say, unread)
+
+
+def send(document: Optional[dict], say: Callable[[str, str], None], unread: str = "") -> int:
+    """Send `document` and report through `say(level, text)`; 0 or 1 as the
+    endings in this module's docstring, in the same order — configuration first.
+    `None` with `unread` is a record that could not be read. Imported by the
+    gate's contract-2 `ci` answer (.agent-rfc/designs/gate-contract-ci.md), so a
+    tenant's workflow runs no record step of its own."""
     url = os.environ.get("AGENTSMITH_PORTAL_URL", "").strip()
     token = os.environ.get("AGENTSMITH_PORTAL_INGEST_TOKEN", "").strip()
     if not url or not token:
-        _say("notice", "the gate's record was not sent: set AGENTSMITH_PORTAL_URL and "
+        say("notice", "the gate's record was not sent: set AGENTSMITH_PORTAL_URL and "
                        "AGENTSMITH_PORTAL_INGEST_TOKEN to show this repository in the portal's Dev workspace")
         return 0
     parsed = urlparse(url)
     if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")):
-        _say("error", f"AGENTSMITH_PORTAL_URL must be https (or http to localhost) — not sending the token to {url}")
+        say("error", f"AGENTSMITH_PORTAL_URL must be https (or http to localhost) — not sending the token to {url}")
         return 1
-    try:
-        document = json.loads(open(argv[1], encoding="utf-8").read())
-    except (OSError, json.JSONDecodeError) as exc:
-        _say("warning", f"no gate record to send ({exc}) — did the gate step run?")
+    if document is None:
+        say("warning", f"no gate record to send ({unread}) — did the gate step run?")
         return 0
 
     endpoint = url.rstrip("/") + "/api/dev/ingest"
@@ -111,7 +124,7 @@ def main(argv: list[str]) -> int:
         except _Redirected as exc:
             # The operator's fix, not an outage: a warning here would let a green
             # build hide that every record since was going nowhere.
-            _say("error", f"the portal redirected ({exc}) — not following it, because the token would go "
+            say("error", f"the portal redirected ({exc}) — not following it, because the token would go "
                           "with it. Set AGENTSMITH_PORTAL_URL to the portal's final address.")
             return 1
         except urllib.error.HTTPError as exc:
@@ -122,14 +135,14 @@ def main(argv: list[str]) -> int:
                 # JSON we hoped for; keep the raw text already in `reason`.
                 pass
             if 400 <= exc.code < 500:
-                _say("error", f"the portal refused the gate's record ({exc.code}): {reason}")
+                say("error", f"the portal refused the gate's record ({exc.code}): {reason}")
                 return 1
-            _say("warning", f"the portal could not store the gate's record ({exc.code}): {reason}")
+            say("warning", f"the portal could not store the gate's record ({exc.code}): {reason}")
             return 0
         except (urllib.error.URLError, OSError) as exc:
-            _say("warning", f"the portal was not reachable at {url} ({exc}) — the record was not sent")
+            say("warning", f"the portal was not reachable at {url} ({exc}) — the record was not sent")
             return 0
-    _say("notice", f"the gate's record reached the portal: {stored} commit(s) stored")
+    say("notice", f"the gate's record reached the portal: {stored} commit(s) stored")
     return 0
 
 

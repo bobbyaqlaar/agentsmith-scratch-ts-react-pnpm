@@ -1,10 +1,14 @@
 """
 runtime/conformance.py — does this command satisfy the gate contract?
-(.agent-rfc/designs/gate-port.md, contract/gate/v1/protocol.md)
+(.agent-rfc/designs/gate-port.md, contract/gate/v1/ and v2/ protocol.md)
 
-    cases()                    what the contract asks, as data
-    fixture()                  the repository those cases are asked about
-    run(provider, workdir)     build it, replay them, report
+    cases(contract)                    what the contract asks, as data
+    fixture(contract)                  the repository those cases are asked about
+    run(provider, workdir, contract)   build it, replay them, report
+
+Each version is scored by its own directory: version 2's cases include
+version 1's, so a provider that passes 2 passes 1, and a version-1 provider
+keeps the score it had (.agent-rfc/designs/gate-contract-ci.md).
 
 A gate decision is about a repository, so the contract carries the repository
 too: the fixture is built here, from the contract's own data, and the provider
@@ -25,25 +29,28 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 1  # the default a run is scored against; 2 adds `ci`
+CONTRACTS = (1, 2)
 DECISIONS = ("allow", "deny", "block", "context")
 # A provider saying "not me": the caller tries the next one. Never a decision.
 CANNOT_RUN = 3
 
 
-def _contract_dir() -> Path:
+def _contract_dir(contract: int = CONTRACT_VERSION) -> Path:
     """The contract, beside this package or in the framework it came from —
     the same order `runtime/architectures.py` uses for its catalogue."""
+    if contract not in CONTRACTS:
+        raise ValueError(f"gate contract {contract} does not exist — choose from {', '.join(map(str, CONTRACTS))}")
     candidates = [
         Path(os.environ["AGENTSMITH_DIR"]) if os.environ.get("AGENTSMITH_DIR") else None,
         Path(__file__).resolve().parent.parent,
         Path.home() / ".agent-framework",
     ]
     for root in candidates:
-        if root is not None and (root / "contract" / "gate" / f"v{CONTRACT_VERSION}" / "cases.json").is_file():
-            return root / "contract" / "gate" / f"v{CONTRACT_VERSION}"
+        if root is not None and (root / "contract" / "gate" / f"v{contract}" / "cases.json").is_file():
+            return root / "contract" / "gate" / f"v{contract}"
     raise FileNotFoundError(
-        f"contract/gate/v{CONTRACT_VERSION}/ not found in $AGENTSMITH_DIR, beside this package, or "
+        f"contract/gate/v{contract}/ not found in $AGENTSMITH_DIR, beside this package, or "
         "~/.agent-framework — re-run install-ai-stack.sh"
     )
 
@@ -75,13 +82,14 @@ class Result:
 class Report:
     provider: str
     results: list[Result]
+    contract: int = CONTRACT_VERSION
 
     @property
     def passed(self) -> bool:
         return bool(self.results) and all(r.ok for r in self.results)
 
     def render(self) -> str:
-        lines = [f"gate contract v{CONTRACT_VERSION} — {self.provider}", ""]
+        lines = [f"gate contract v{self.contract} — {self.provider}", ""]
         for result in self.results:
             mark = "✅" if result.ok else "❌"
             lines.append(f"  {mark} {result.case.name}" + (f" — {result.why}" if result.why else ""))
@@ -90,20 +98,22 @@ class Report:
         return "\n".join(lines)
 
 
-def cases() -> list[Case]:
-    data = json.loads((_contract_dir() / "cases.json").read_text(encoding="utf-8"))
+def cases(contract: int = CONTRACT_VERSION) -> list[Case]:
+    data = json.loads((_contract_dir(contract) / "cases.json").read_text(encoding="utf-8"))
     return [Case.model_validate({k: v for k, v in case.items() if not k.startswith("_")})
             for case in data["cases"]]
 
 
-def fixture() -> dict:
-    return json.loads((_contract_dir() / "fixture.json").read_text(encoding="utf-8"))
+def fixture(contract: int = CONTRACT_VERSION) -> dict:
+    return json.loads((_contract_dir(contract) / "fixture.json").read_text(encoding="utf-8"))
 
 
-def build_fixture(workdir: Path) -> Path:
+def build_fixture(workdir: Path, contract: int = CONTRACT_VERSION) -> Path:
     """The contract's repository, freshly built. `--template=` so the machine's
-    own git hooks stay out of a run that is about the provider, not the machine."""
-    spec = fixture()
+    own git hooks stay out of a run that is about the provider, not the machine.
+    Version 2's fixture adds a tagged `history` after the first commit (tagged
+    `fixture`), so its `ci` cases can name a range."""
+    spec = fixture(contract)
     root = Path(workdir)
     root.mkdir(parents=True, exist_ok=True)
     for rel, body in spec["files"].items():
@@ -116,6 +126,16 @@ def build_fixture(workdir: Path) -> Path:
     subprocess.run(["git", "init", "-q", "-b", "main", "--template=", str(root)], check=True)
     subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
     subprocess.run([*git, "commit", "-q", "-m", commit.get("message", "fixture")], check=True, capture_output=True)
+    if spec.get("history"):
+        subprocess.run([*git, "tag", "fixture"], check=True, capture_output=True)
+    for step in spec.get("history") or []:
+        for rel, body in step["files"].items():
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
+        subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+        subprocess.run([*git, "commit", "-q", "-m", step["message"]], check=True, capture_output=True)
+        subprocess.run([*git, "tag", step["tag"]], check=True, capture_output=True)
     return root
 
 
@@ -144,12 +164,12 @@ def _judge(case: Case, code: int, out: str, err: str) -> Result:
     return Result(case, ok=True, actual=decision)
 
 
-def run(provider: str, workdir: Path) -> Report:
+def run(provider: str, workdir: Path, contract: int = CONTRACT_VERSION) -> Report:
     """Build the fixture, replay every case against `provider`, and report."""
-    root = build_fixture(Path(workdir))
+    root = build_fixture(Path(workdir), contract)
     results = []
-    for case in cases():
+    for case in cases(contract):
         for rel, body in (case.arrange.get("write") or {}).items():
             (root / rel).write_text(body, encoding="utf-8")
         results.append(_judge(case, *_ask(provider, case, root)))
-    return Report(provider=provider, results=results)
+    return Report(provider=provider, results=results, contract=contract)

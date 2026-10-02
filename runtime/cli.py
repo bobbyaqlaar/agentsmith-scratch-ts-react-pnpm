@@ -564,7 +564,7 @@ GATED_BY_STACK = {
     "ts-react": ["src/**", "app/**", "lib/**", "scripts/**"],
 }
 ALWAYS_GATED = [".github/**", ".githooks/**", ".agenticframework/process-gates.json",
-                ".claude/settings.json", ".cursor/hooks.json"]
+                ".agenticframework/providers.json", ".claude/settings.json", ".cursor/hooks.json"]
 
 
 def _process_gates_config(stack: str, session_start: Optional[str] = None,
@@ -992,7 +992,10 @@ def _cmd_gate(args: argparse.Namespace) -> int:
     # The dialect the caller asked for, or the contract's neutral profile. A
     # provider that serves IDE hooks accepts --ide and translates; conformance
     # pins the neutral profile (contract/gate/v1/protocol.md).
-    done = sp.run([sys.executable, str(gate), args.event, "--ide", args.ide or "neutral"],
+    # `ci` is contract 2's: a range, answered by the same run CI made by path
+    # (contract/gate/v2/protocol.md). The three v1 events keep their dialects.
+    command = ["ci", "--decision"] if args.event == "ci" else [args.event, "--ide", args.ide or "neutral"]
+    done = sp.run([sys.executable, str(gate), *command],
                   input=sys.stdin.read() if not sys.stdin.isatty() else "{}",
                   capture_output=True, text=True, check=False)
     sys.stderr.write(done.stderr)
@@ -1018,7 +1021,7 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            report = run(args.provider, Path(tmp) / "fixture")
+            report = run(args.provider, Path(tmp) / "fixture", args.contract)
         except FileNotFoundError as exc:
             print(f"agentsmith: {exc}", file=sys.stderr)
             return 2
@@ -1314,8 +1317,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync_cmd.add_argument("--yes", action="store_true", help="sync without asking (required off a terminal)")
     sync_cmd.set_defaults(func=_cmd_sync)
 
-    gate = sub.add_parser("gate", help="answer a gate event (contract/gate/v1 — the neutral profile)")
-    gate.add_argument("event", choices=("session-start", "pre-edit", "stop"))
+    gate = sub.add_parser("gate", help="answer a gate event (contract/gate/v2 — the neutral profile)")
+    gate.add_argument("event", choices=("session-start", "pre-edit", "stop", "ci"))
     gate.add_argument("--ide", default=None,
                       help="the dialect the payload is in (default: the contract's neutral profile)")
     gate.set_defaults(func=_cmd_gate)
@@ -1323,6 +1326,8 @@ def build_parser() -> argparse.ArgumentParser:
     conformance = sub.add_parser("conformance", help="does a command satisfy the gate contract?")
     conformance.add_argument("--provider", required=True, metavar="COMMAND",
                              help='the provider to test, e.g. "agentsmith gate"')
+    conformance.add_argument("--contract", type=int, default=1, choices=(1, 2),
+                             help="the gate contract version to score against (2 adds the ci event)")
     conformance.set_defaults(func=_cmd_conformance)
 
     promote_tenant = tenant.add_parser("promote", help="gate on staging evals, then open the develop → main PR")

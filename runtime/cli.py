@@ -509,17 +509,33 @@ def write_scaffold_records(root: Path, tenant_id: str, stack: str, style: Option
         # pillars nobody can list.
         print(f"  ! {design} not written: {registry_path} is missing — re-run "
               "install-ai-stack.sh from a current AgentSmith checkout", file=sys.stderr)
-    elif design_path.exists() and (not force or generated_by):
-        # A sync keeps the design the arming commit wrote: it changes no scope,
-        # and rewriting it would make every sync look like a new design.
+    elif design_path.exists() and generated_by:
+        # A sync keeps the design the arming commit wrote — rewriting it would make
+        # every sync look like a new design — but its commit must be covered by it,
+        # and a sync can commit what the arming commit never wrote: the hooks a
+        # tenant armed before they existed, and the manifest wherever the tenant
+        # gates it. Scope lines only; the prose is the arming commit's
+        # (.agent-rfc/designs/sync-adds-missing-hooks.md).
+        from runtime import architectures
+
+        before = design_path.read_text(encoding="utf-8")
+        after = architectures.extend_design_scope(before, [*written, SCAFFOLD_MANIFEST])
+        if after != before:
+            design_path.write_text(after, encoding="utf-8")
+            records.append(design)
+        else:
+            print(f"  = {design} already covers this sync")
+    elif design_path.exists() and not force:
         print(f"  = {design} exists — left untouched")
     else:
         from runtime import architectures
 
         design_path.parent.mkdir(parents=True, exist_ok=True)
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        # The manifest is in the commit this design covers, and a tenant may gate it.
         design_path.write_text(architectures.render_scaffold_design(
-            tenant_id, stack, style, agentic, files, registry.get("pillars", []), adopted=adopted), encoding="utf-8")
+            tenant_id, stack, style, agentic, [*files, SCAFFOLD_MANIFEST], registry.get("pillars", []),
+            adopted=adopted), encoding="utf-8")
         records.append(design)
     command = generated_by or ("agentsmith tenant adopt" if adopted else "agentsmith tenant init")
     manifest = {
@@ -1023,7 +1039,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         print(f"agentsmith: {exc}", file=sys.stderr)
         return 2
     print(describe(plan))
-    if not plan.stale and not plan.vendored:
+    if not plan.stale and not plan.added and not plan.vendored:
         print("\nNothing to do.")
         return 0
     if not args.yes:

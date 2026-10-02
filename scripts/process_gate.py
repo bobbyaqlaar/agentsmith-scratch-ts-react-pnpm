@@ -485,6 +485,11 @@ def manifest_problems(gated: List[str], read: Reader) -> List[str]:
     by = _manifest_author(read)
     problems = []
     for path in gated:
+        if path == SCAFFOLD_MANIFEST:
+            # The check's own input: parsed above, its author named in the note. A
+            # file cannot carry its own hash, and a tenant init or adopt wrote does
+            # not gate it at all (.agent-rfc/designs/sync-adds-missing-hooks.md).
+            continue
         body = read(path)
         if path not in files:
             problems.append(f"{path} is not part of what `{by}` wrote — review it")
@@ -506,7 +511,8 @@ def scaffold_problems(gated: List[str], read: Reader, arming: bool) -> List[str]
 def vouched_note(label: str, gated: List[str], read: Reader) -> str:
     """The sentence both hash-verified escapes end on. One place, so the scaffold
     and the sync escape can never describe the same check in two different ways."""
-    return (f"Review: n/a: {label} — {len(gated)} gated file(s) match "
+    checked = [path for path in gated if path != SCAFFOLD_MANIFEST]  # the manifest is not checked against itself
+    return (f"Review: n/a: {label} — {len(checked)} gated file(s) match "
             f"{SCAFFOLD_MANIFEST}, as `{_manifest_author(read)}` wrote them")
 
 

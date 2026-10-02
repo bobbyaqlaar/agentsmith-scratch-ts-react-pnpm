@@ -810,6 +810,12 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
         mutations=(
             Mutation(
+                "the vouched note counts the manifest it never checked against itself",
+                "scripts/process_gate.py",
+                "    checked = [path for path in gated if path != SCAFFOLD_MANIFEST]",
+                "    checked = gated",
+            ),
+            Mutation(
                 "the chain runs the prior hook even when it points back at .githooks — it calls itself forever",
                 ".githooks/chain",
                 '[ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] || exit 0',
@@ -1157,6 +1163,36 @@ CATALOGUE: tuple[Suite, ...] = (
                 "runtime/machine/upgrade.py",
                 "    marker = looks_like_framework(repo)",
                 "    marker = None",
+            ),
+            Mutation(
+                "a tenant armed before the sweep is not planned the hooks it lacks",
+                "runtime/sync.py",
+                '    plan.added = [f".githooks/{hook}" for hook in GATE_HOOKS',
+                '    plan.added = [f".githooks/{hook}" for hook in () and GATE_HOOKS',
+            ),
+            Mutation(
+                "the hooks a sync adds are armed but left out of its manifest and commit",
+                "runtime/sync.py",
+                "    written += plan.stale + plan.added",
+                "    written += plan.stale",
+            ),
+            Mutation(
+                "the manifest is asked to vouch for itself, so a tenant gating it can never take a sync",
+                "scripts/process_gate.py",
+                "        if path == SCAFFOLD_MANIFEST:\n            # The check's own input",
+                "        if False:\n            # The check's own input",
+            ),
+            Mutation(
+                "a sync commits files its arming design does not cover",
+                "runtime/cli.py",
+                "        after = architectures.extend_design_scope(before, [*written, SCAFFOLD_MANIFEST])",
+                "        after = before",
+            ),
+            Mutation(
+                "a scaffold design leaves out the manifest committed beside it",
+                "runtime/cli.py",
+                "            tenant_id, stack, style, agentic, [*files, SCAFFOLD_MANIFEST], registry.get(",
+                "            tenant_id, stack, style, agentic, files, registry.get(",
             ),
         ),
     ),

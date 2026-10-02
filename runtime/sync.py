@@ -44,6 +44,7 @@ class Plan:
     framework: Path
     version: str
     stale: list[str] = field(default_factory=list)
+    added: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -87,7 +88,8 @@ def plan_sync(root: Path, *, tenant_id: Optional[str] = None, framework: Optiona
     `framework` names the copy to sync FROM; the default is the one this
     install resolves. A tenant is stale when the framework moved on, so the two
     are deliberately separate."""
-    from runtime.cli import _default_framework_version, _framework_dir, looks_like_framework, missing_gate_hooks
+    from runtime.cli import GATE_HOOKS, _default_framework_version, _framework_dir, looks_like_framework, \
+        missing_gate_hooks
 
     root = Path(root)
     # First, before anything is read: the framework carries process-gates.json
@@ -114,12 +116,20 @@ def plan_sync(root: Path, *, tenant_id: Optional[str] = None, framework: Optiona
                 stack=str(manifest.get("stack") or "python-fastapi"), vendored=not is_adopted(root),
                 framework=framework, version=_default_framework_version())
     # Stale: a file this framework owns whose copy here differs from the
-    # framework's. Only files it already wrote — a sync adds nothing new to a
-    # repository that did not ask for it.
+    # framework's. A sync adds nothing new to a repository that did not ask for
+    # it — except the gate's own hooks, which a repository that armed the gates
+    # did ask for: one armed before `pre-commit`, `pre-push` and `chain` existed
+    # gets them, and they go in the manifest and the commit like any refresh
+    # (.agent-rfc/designs/sync-adds-missing-hooks.md).
     for hook in (framework / ".githooks").iterdir():
         here = root / ".githooks" / hook.name
         if here.is_file() and hook.is_file() and _digest(here) != _digest(hook):
             plan.stale.append(f".githooks/{hook.name}")
+    plan.added = [f".githooks/{hook}" for hook in GATE_HOOKS
+                  if (framework / ".githooks" / hook).is_file() and not (root / ".githooks" / hook).exists()]
+    if {".githooks/pre-commit", ".githooks/pre-push"} & set(plan.added):
+        plan.notes.append("new here: the bypass sweep runs on every commit and push from now on, and a push is "
+                          "refused while a commit that skipped the gate is outstanding — `agentsmith gates repair`")
 
     # The files the tenant shares with the framework. `ownership` decides: a
     # file they have edited is named and left, never clobbered.
@@ -218,7 +228,8 @@ def _workflow_template(framework: Path, name: str) -> Optional[Path]:
 
 def describe(plan: Plan) -> str:
     lines = [f"Syncing {plan.root} with AgentSmith {plan.version}", ""]
-    lines += [f"  stale   {path}" for path in plan.stale] or ["  nothing stale in what this framework owns"]
+    changes = [f"  stale   {path}" for path in plan.stale] + [f"  add     {path}" for path in plan.added]
+    lines += changes or ["  nothing stale in what this framework owns"]
     lines += [f"\n  ! {note}" for note in plan.notes]
     return "\n".join(lines)
 
@@ -244,7 +255,7 @@ def sync(plan: Plan) -> list[str]:
             target.write_text(_with_block(target, text), encoding="utf-8")
         else:
             target.write_text(text, encoding="utf-8")
-    written += plan.stale
+    written += plan.stale + plan.added
     if not (root / PROVIDERS).exists():
         (root / PROVIDERS).write_text(providers_declaration(), encoding="utf-8")
         written.append(PROVIDERS)

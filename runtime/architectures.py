@@ -17,6 +17,7 @@ and nothing else reads it.
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
@@ -255,6 +256,43 @@ What this change is for, in the words of whoever asked for it. One paragraph.
      RFC: `agentsmith design new <slug> --scope <glob>` writes that skeleton.
      See AgentSmith docs/process-gates.md. -->
 """
+
+
+def extend_design_scope(text: str, paths: Iterable[str]) -> str:
+    """`text` with each of `paths` its front matter's `scope:` list lacks appended
+    to that list; everything else as it was, and `text` itself when nothing is
+    missing — so a second call changes nothing.
+
+    For `agentsmith sync`, which keeps the arming design rather than rewriting it
+    but commits files that design never listed: the hooks a tenant armed before
+    they existed, and the manifest (.agent-rfc/designs/sync-adds-missing-hooks.md).
+    A text with no front matter or no `scope:` list is returned unchanged: there
+    is no list to extend, and inventing one would rewrite someone's design."""
+    if not text.startswith("---\n"):
+        return text
+    end = text.find("\n---", 4)
+    if end < 0:
+        return text
+    lines = text[4:end].split("\n")
+    try:
+        start = lines.index("scope:")
+    except ValueError:
+        return text
+    # An item as the gate reads one (scripts/process_gate.py front_matter): any
+    # indentation. Reading only `  - ` would miss a hand-indented list, append it
+    # all again, and leave duplicates.
+    item = re.compile(r"^(\s+-\s+)(.+?)\s*$")
+    stop = start + 1
+    while stop < len(lines) and item.match(lines[stop]):
+        stop += 1
+    found = [item.match(line) for line in lines[start + 1:stop]]
+    listed = {m.group(2) for m in found if m}
+    missing = [path for path in dict.fromkeys(paths) if path not in listed]
+    if not missing:
+        return text
+    lead = found[-1].group(1) if found and found[-1] else "  - "
+    lines[stop:stop] = [f"{lead}{path}" for path in missing]
+    return "---\n" + "\n".join(lines) + text[end:]
 
 
 def render_scaffold_design(tenant_id: str, stack: str, style: Optional[str], agentic: bool,

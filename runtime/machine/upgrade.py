@@ -120,6 +120,17 @@ def upgrade(
     home: Optional[Path] = None,
 ) -> int:
     home = home or framework_home()
+    # Before the tenant.yaml check, which used to be all that kept this from
+    # copying the install over the framework's own scripts/ and runtime/ — a
+    # file `tenant init --allow-framework-root` writes
+    # (.agent-rfc/designs/framework-sync-refuses-framework.md).
+    from runtime.cli import looks_like_framework
+
+    marker = looks_like_framework(repo)
+    if marker:
+        out(f"❌ {repo} is AgentSmith's own checkout ({marker}) — it is what upgrade copies FROM, not a tenant.")
+        out("   Run it in a tenant repository.")
+        return 1
     tenant_yaml = repo / ".agenticframework" / "tenant.yaml"
     if not tenant_yaml.is_file():
         out("❌ No .agenticframework/tenant.yaml in current repo — run from the tenant repo root")

@@ -683,19 +683,25 @@ def repo_root(start: Optional[str] = None) -> Path:
 
 
 def _reader_at(root: Path, rev: str) -> Reader:
-    """`rev` "" reads the index; otherwise a commit."""
+    """`rev` "" reads the index; otherwise a commit.
+
+    Bytes, decoded with replacement: a commit may carry an image, a font or a PDF,
+    and decoding those as strict UTF-8 crashed the gate instead of judging the
+    commit. The file still EXISTS to the gate — `kg_problems` keeps it in the
+    scope, as the author's `local_knowledge_graph.py --impact` does — and no
+    check reads a binary's content: gate_pillars skips `_BINARY` before it
+    reads (.agent-rfc/designs/gate-reads-binary-files.md)."""
     def read(path: str) -> Optional[str]:
-        result = subprocess.run(
-            ["git", "show", f"{rev}:{path}"], cwd=root, capture_output=True, text=True, check=False
-        )
-        return result.stdout if result.returncode == 0 else None
+        result = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=root, capture_output=True, check=False)
+        return result.stdout.decode("utf-8", errors="replace") if result.returncode == 0 else None
     return read
 
 
 def _worktree_reader(root: Path) -> Reader:
     def read(path: str) -> Optional[str]:
         target = root / path
-        return target.read_text(encoding="utf-8") if target.is_file() else None
+        # Replacement, not strict, for the reason _reader_at gives.
+        return target.read_bytes().decode("utf-8", errors="replace") if target.is_file() else None
     return read
 
 

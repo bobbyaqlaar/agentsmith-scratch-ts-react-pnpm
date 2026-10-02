@@ -488,6 +488,36 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="gate_binary_files",
+        tests=(
+            "scripts/test/test_gate_kg.py::"
+            "test_a_commit_carrying_a_binary_file_is_judged_by_both_gates_not_crashed_on",
+            "scripts/test/test_process_gate.py::"
+            "test_the_working_tree_reader_returns_a_binary_file_rather_than_crashing",
+        ),
+        mutations=(
+            Mutation(
+                "the index and commit reader decodes strictly again — a commit carrying an image "
+                "crashes the gate and CI",
+                "scripts/process_gate.py",
+                '        result = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=root, '
+                'capture_output=True, check=False)\n'
+                '        return result.stdout.decode("utf-8", errors="replace") '
+                'if result.returncode == 0 else None',
+                '        result = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=root, '
+                'capture_output=True, text=True, '
+                'check=False)\n'
+                "        return result.stdout if result.returncode == 0 else None",
+            ),
+            Mutation(
+                "the working-tree reader decodes strictly again — the stop gate crashes on an image",
+                "scripts/process_gate.py",
+                '        return target.read_bytes().decode("utf-8", errors="replace") if target.is_file() else None',
+                '        return target.read_text(encoding="utf-8") if target.is_file() else None',
+            ),
+        ),
+    ),
+    Suite(
         name="send_dev_record",
         tests=("scripts/test/test_send_dev_record.py",),
         mutations=(
@@ -1115,6 +1145,18 @@ CATALOGUE: tuple[Suite, ...] = (
                 "runtime/cli.py",
                 '    command = generated_by or ("agentsmith tenant adopt" if adopted else "agentsmith tenant init")',
                 '    command = "agentsmith tenant adopt" if adopted else "agentsmith tenant init"',
+            ),
+            Mutation(
+                "sync scaffolds a tenant into the framework's own checkout again",
+                "runtime/sync.py",
+                "    marker = looks_like_framework(root)\n    if marker:\n        raise SyncError(",
+                "    marker = None\n    if marker:\n        raise SyncError(",
+            ),
+            Mutation(
+                "upgrade copies an install over the framework's own scripts/ and runtime/",
+                "runtime/machine/upgrade.py",
+                "    marker = looks_like_framework(repo)",
+                "    marker = None",
             ),
         ),
     ),

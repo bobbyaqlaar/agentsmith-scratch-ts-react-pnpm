@@ -87,9 +87,17 @@ def plan_sync(root: Path, *, tenant_id: Optional[str] = None, framework: Optiona
     `framework` names the copy to sync FROM; the default is the one this
     install resolves. A tenant is stale when the framework moved on, so the two
     are deliberately separate."""
-    from runtime.cli import _default_framework_version, _framework_dir, missing_gate_hooks
+    from runtime.cli import _default_framework_version, _framework_dir, looks_like_framework, missing_gate_hooks
 
     root = Path(root)
+    # First, before anything is read: the framework carries process-gates.json
+    # like any governed repository, so the check below let a sync scaffold a
+    # tenant into the framework itself (.agent-rfc/designs/framework-sync-refuses-framework.md).
+    # No override, unlike `tenant init`'s: there is nothing to sync it FROM.
+    marker = looks_like_framework(root)
+    if marker:
+        raise SyncError(f"{root} is AgentSmith's own checkout ({marker}): it is what `sync` copies FROM, "
+                        "not a tenant. Run it in a tenant repository, or pass --root")
     if not (root / ".agenticframework" / "process-gates.json").is_file():
         raise SyncError(f"{root} is not under the gates — `agentsmith tenant adopt` brings a repository in")
     framework = Path(framework) if framework is not None else _framework_dir()

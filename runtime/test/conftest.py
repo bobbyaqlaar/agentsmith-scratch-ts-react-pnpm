@@ -85,3 +85,19 @@ def pytest_configure(config):
     import tempfile
 
     os.environ.setdefault("AGENTSMITH_STATE_DIR", tempfile.mkdtemp(prefix="agentsmith-test-state-"))
+
+    # This checkout's `agentsmith` on PATH, as scripts/test/conftest.py does: a
+    # tenant's commits ask it at gate contract 3. One implementation, in
+    # scripts/test/provider_shim.py — present in a framework checkout only. This
+    # file is vendored into tenants' runtime/test/, where scripts/test/ is not and
+    # nothing here commits; loading it unconditionally crashed their security
+    # harness at configure time (.agent-rfc/reviews/gate-local-events.md).
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "test" / "provider_shim.py"
+    if path.is_file():
+        spec = importlib.util.spec_from_file_location("provider_shim", path)
+        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        module.install()

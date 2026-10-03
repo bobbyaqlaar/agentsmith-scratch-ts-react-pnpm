@@ -10,7 +10,7 @@ the intent, not just the letter.
 ## Session start
 1. Read `.agent-history.log` and surface unresolved MAJOR/CRITICAL entries.
 2. Confirm a spec exists in `.agent-rfc/` before editing any source file.
-3. Query the Knowledge Graph (`python3 scripts/local_knowledge_graph.py`) for dependencies.
+3. Scope the change with the Knowledge Graph (`agentsmith gate kg impact`): the files to read and the `KG query:` hash.
 
 ## Rules
 1. **Requirements and Design** — An .agent-rfc/ directory must exist. Do not modify source files unless a markdown spec exists in .agent-rfc/. Before any change, produce a step-by-step implementation blueprint.

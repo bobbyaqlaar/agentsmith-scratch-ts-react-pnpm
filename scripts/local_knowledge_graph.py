@@ -285,6 +285,11 @@ if __name__ == "__main__":
                         help="What a change touches: the files to read, the lever groups, and the KG query hash")
     parser.add_argument("--base", default="HEAD", metavar="REF",
                         help="With --impact: the ref to diff against (default HEAD)")
+    parser.add_argument("--staged", action="store_true",
+                        help="With --impact: the commit being made — the staged set and the index's graph, "
+                             "exactly what the commit gate checks the review's hash against")
+    parser.add_argument("--json", action="store_true",
+                        help="With --impact: the answer as gate contract 3's `kg impact` (JSON)")
     parser.add_argument(
         "--hops", type=int, default=2, help="Subgraph hop depth (default: 2)"
     )
@@ -293,9 +298,16 @@ if __name__ == "__main__":
     kg = AgentKnowledgeGraph()
 
     if args.impact:
-        graph_path = _graph_path()
-        graph = json.loads(graph_path.read_text(encoding="utf-8")) if graph_path.is_file() else {}
-        print(render_impact(impact(graph, changed_files(args.base))))
+        from gate_kg import staged_files, staged_graph
+
+        if args.staged:
+            graph, changed = staged_graph(), staged_files()
+        else:
+            graph_path = _graph_path()
+            graph = json.loads(graph_path.read_text(encoding="utf-8")) if graph_path.is_file() else {}
+            changed = changed_files(args.base)
+        found = impact(graph, changed)
+        print(json.dumps(found._asdict()) if args.json else render_impact(found))
     elif args.stats:
         print(json.dumps(kg.stats(), indent=2))
     elif args.context:

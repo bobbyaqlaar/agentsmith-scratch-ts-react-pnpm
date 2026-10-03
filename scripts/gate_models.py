@@ -29,10 +29,17 @@ __all__ = [
     "Artifact",
     "Artifacts",
     "Decision",
+    "DecisionV2",
     "Deviation",
     "Extends",
     "GateEvent",
+    "GateEventV2",
+    "GateEventV3",
     "Ide",
+    "KgEdge",
+    "KgImpact",
+    "KgNode",
+    "KnowledgeGraph",
     "Pillar",
     "PillarPolicy",
     "Records",
@@ -146,6 +153,58 @@ class DecisionV2(Decision):
 
     report: str = ""
     annotations: list[str] = Field(default_factory=list)
+
+
+class GateEventV3(GateEventV2):
+    """A gate event in contract 3 (contract/gate/v3/): v2's, plus `commit` —
+    may this commit be made, judged on the staged change and `message` — and
+    `push` — may this history leave the machine. v2's model is left as it was."""
+
+    kind: Literal["edit", "shell", "other", "range", "commit", "push"]
+    message: str | None = None
+    amend: bool = False
+
+
+class KgNode(BaseModel):
+    """One node of a repository's knowledge graph: a file or a guardrail."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(min_length=1)
+    node_type: str | None = None
+
+
+class KgEdge(BaseModel):
+    """One edge: `source` IMPORTS `target`, and the like."""
+
+    model_config = ConfigDict(extra="allow")
+
+    source: str
+    target: str
+    edge_type: str
+
+
+class KnowledgeGraph(BaseModel):
+    """`.agent-rfc/fixtures/knowledge_graph.json`, as a provider reads it to
+    scope a review (contract/gate/v3/knowledge_graph.schema.json). The fields
+    the review-scope hash depends on are pinned; a builder may add more."""
+
+    model_config = ConfigDict(extra="allow")
+
+    nodes: list[KgNode] = Field(default_factory=list)
+    edges: list[KgEdge] = Field(default_factory=list)
+    links: list[KgEdge] = Field(default_factory=list)
+
+
+class KgImpact(_Frozen):
+    """What `<gate> kg impact` answers: the files a review must read (the change
+    plus one hop of dependents), the lever groups, the changed files the graph
+    does not know yet, and the scope's name — the review's `KG query:` line."""
+
+    files: list[str]
+    groups: list[int]
+    unknown: list[str] = Field(default_factory=list)
+    query: str = Field(pattern=r"^kg:[0-9a-f]{12}$")
 
 
 class Ide(_Frozen):

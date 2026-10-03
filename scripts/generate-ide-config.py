@@ -376,7 +376,7 @@ Follow all rules in `.cursorrules` exactly. They are not suggestions.
 ## Session Start Checklist
 1. Read `.agent-history.log` — surface any unresolved MAJOR/CRITICAL entries to the user.
 2. Check `.agent-rfc/` — confirm a spec exists before touching any source file.
-3. Query the Knowledge Graph: `python3 scripts/local_knowledge_graph.py` to identify dependencies.
+3. Scope the change with the Knowledge Graph: `agentsmith gate kg impact` — the files to read, the `KG query:` hash.
 
 ## Test Command
 ```
@@ -435,7 +435,7 @@ the intent, not just the letter.
 ## Session start
 1. Read `.agent-history.log` and surface unresolved MAJOR/CRITICAL entries.
 2. Confirm a spec exists in `.agent-rfc/` before editing any source file.
-3. Query the Knowledge Graph (`python3 scripts/local_knowledge_graph.py`) for dependencies.
+3. Scope the change with the Knowledge Graph (`agentsmith gate kg impact`): the files to read and the `KG query:` hash.
 
 ## Rules
 {pillars}

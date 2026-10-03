@@ -36,7 +36,7 @@ ADOPTION_DESIGN = ".agent-rfc/designs/adoption.md"
 PROVIDERS = ".agenticframework/providers.json"
 # The contract version a repository adopted today speaks, and this framework's
 # own major as the range it expects (contract/gate/v1/protocol.md).
-GATE_CONTRACT = 2
+GATE_CONTRACT = 3
 # AgentSmith's own CI setup step: what a tenant pins to pin the provider in CI
 # (contract/gate/v2/protocol.md, .agent-rfc/designs/gate-contract-ci.md).
 SETUP_ACTION = "bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith"
@@ -401,7 +401,7 @@ def workflow_setup(root: Path, ref: Optional[str] = None) -> str:
 
 
 def providers_declaration(command: str = "agentsmith gate", setup: Optional[str] = None) -> str:
-    """Who governs this repository, as `contract/gate/v2/providers.schema.json`
+    """Who governs this repository, as `contract/gate/v3/providers.schema.json`
     describes it. Named rather than implied: the hooks and CI ask the
     declaration, and another platform's command goes here instead
     (.agent-rfc/designs/provider-resolution.md, gate-contract-ci.md)."""
@@ -411,7 +411,7 @@ def providers_declaration(command: str = "agentsmith gate", setup: Optional[str]
     return json.dumps({
         "_about": "Who governs this repository. The hooks and CI ask this before anything else; "
                   "`\"gate\": \"none\"` declares the repository ungoverned. See "
-                  "contract/gate/v2/protocol.md.",
+                  "contract/gate/v3/protocol.md.",
         "contract": GATE_CONTRACT,
         "providers": {"gate": {"command": command, "version": f"^{major}", "setup": setup or setup_reference()}},
     }, indent=2) + "\n"

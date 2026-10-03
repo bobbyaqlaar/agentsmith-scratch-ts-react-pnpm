@@ -93,6 +93,27 @@ def changed_files(base: str, root: Optional[Path] = None) -> list:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def staged_files(root: Optional[Path] = None) -> list:
+    """What the commit being made carries and leaves behind: the staged set,
+    deletions excluded — exactly what the commit gate scopes the review by.
+    `git diff <base>` also counts unstaged edits, which is how a review's hash
+    used to disagree with the gate's (.agent-rfc/designs/gate-local-events.md)."""
+    result = subprocess.run(["git", "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=d"],
+                            cwd=root, capture_output=True, text=True, check=False)
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def staged_graph(root: Optional[Path] = None, fixture: str = ".agent-rfc/fixtures/knowledge_graph.json") -> dict:
+    """The graph as the commit will carry it — the index's copy — or {} without one."""
+    import json
+
+    result = subprocess.run(["git", "show", f":{fixture}"], cwd=root, capture_output=True, text=True, check=False)
+    try:
+        return json.loads(result.stdout) if result.returncode == 0 else {}
+    except ValueError:
+        return {}
+
+
 def render_impact(found: Impact) -> str:
     lines = [f"Files to read ({len(found.files)}):"]
     lines += [f"  - {path}" for path in found.files]

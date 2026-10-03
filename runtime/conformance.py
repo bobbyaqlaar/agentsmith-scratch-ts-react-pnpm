@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 CONTRACT_VERSION = 1  # the default a run is scored against; 2 adds `ci`
-CONTRACTS = (1, 2)
+CONTRACTS = (1, 2, 3)
 DECISIONS = ("allow", "deny", "block", "context")
 # A provider saying "not me": the caller tries the next one. Never a decision.
 CANNOT_RUN = 3
@@ -67,6 +68,8 @@ class Case(BaseModel):
     expect: str
     why: str = ""
     arrange: dict = Field(default_factory=dict)
+    # A verb's arguments, after the event name: `kg impact` is ["impact"].
+    args: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -140,15 +143,34 @@ def build_fixture(workdir: Path, contract: int = CONTRACT_VERSION) -> Path:
 
 
 def _ask(provider: str, case: Case, root: Path) -> tuple[int, str, str]:
-    done = subprocess.run([*shlex.split(provider), case.event_name], input=json.dumps(case.event),
+    done = subprocess.run([*shlex.split(provider), case.event_name, *case.args], input=json.dumps(case.event),
                           capture_output=True, text=True, cwd=root, check=False)
     return done.returncode, done.stdout.strip(), done.stderr.strip()
+
+
+def _judge_impact(case: Case, out: str) -> Result:
+    """`kg impact` answers a scope, not a decision: the staged files among those
+    to read, lever groups, and a `kg:` hash (contract/gate/v3/kg_impact.schema.json)."""
+    try:
+        answer = json.loads(out)
+        files, groups, query = answer["files"], answer["groups"], answer["query"]
+    except (ValueError, KeyError, TypeError):
+        first = out.splitlines()
+        return Result(case, ok=False, why=f"not a scope: {first[0] if first else '(no output)'}")
+    staged = set(case.arrange.get("stage") or [])
+    if not (isinstance(files, list) and isinstance(groups, list) and staged <= set(files)):
+        return Result(case, ok=False, actual="impact", why=f"the staged files {sorted(staged)} are not among {files}")
+    if not (isinstance(query, str) and re.fullmatch(r"kg:[0-9a-f]{12}", query)):
+        return Result(case, ok=False, actual="impact", why=f"not a kg: hash: {query!r}")
+    return Result(case, ok=True, actual="impact")
 
 
 def _judge(case: Case, code: int, out: str, err: str) -> Result:
     if code == CANNOT_RUN:
         return Result(case, ok=False, unavailable=True,
                       why=f"cannot run here (exit {CANNOT_RUN}): {err.splitlines()[0] if err else 'no reason given'}")
+    if case.expect == "impact":
+        return _judge_impact(case, out)
     try:
         answer = json.loads(out)
         decision, text = answer["decision"], answer.get("text", "")
@@ -164,12 +186,38 @@ def _judge(case: Case, code: int, out: str, err: str) -> Result:
     return Result(case, ok=True, actual=decision)
 
 
+def _arrange(root: Path, arrange: dict) -> None:
+    """Put the fixture in the state a case asks about: a tagged commit checked
+    out (`checkout`, discarding what earlier cases wrote), files written, and
+    files staged — for the `commit` and `kg` cases of contract 3."""
+    # No hook override: the fixture was made with `--template=` and has no
+    # .githooks/, so its own commits meet no gate — which is the point of `commit`.
+    git = ["git", "-C", str(root), "-c", "user.name=conformance", "-c", "user.email=c@x"]
+    if arrange.get("checkout"):
+        subprocess.run([*git, "checkout", "-q", "-f", "--detach", arrange["checkout"]], check=True, capture_output=True)
+        subprocess.run([*git, "reset", "-q"], check=True, capture_output=True)
+    for tag in arrange.get("drop") or []:
+        subprocess.run([*git, "tag", "-d", tag], check=False, capture_output=True)
+    for rel, body in (arrange.get("write") or {}).items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    if arrange.get("stage"):
+        subprocess.run([*git, "add", "--", *arrange["stage"]], check=True, capture_output=True)
+    if arrange.get("commit"):
+        # A commit made WITHOUT the gate — the fixture's own git, no hooks — which is
+        # exactly the history the `push` event exists to stop leaving the machine.
+        for rel, body in arrange["commit"]["files"].items():
+            (root / rel).write_text(body, encoding="utf-8")
+        subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+        subprocess.run([*git, "commit", "-q", "-m", arrange["commit"]["message"]], check=True, capture_output=True)
+
+
 def run(provider: str, workdir: Path, contract: int = CONTRACT_VERSION) -> Report:
     """Build the fixture, replay every case against `provider`, and report."""
     root = build_fixture(Path(workdir), contract)
     results = []
     for case in cases(contract):
-        for rel, body in (case.arrange.get("write") or {}).items():
-            (root / rel).write_text(body, encoding="utf-8")
+        _arrange(root, case.arrange)
         results.append(_judge(case, *_ask(provider, case, root)))
     return Report(provider=provider, results=results, contract=contract)

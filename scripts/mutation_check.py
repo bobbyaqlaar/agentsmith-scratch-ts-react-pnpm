@@ -1127,6 +1127,56 @@ CATALOGUE: tuple[Suite, ...] = (
             ),
         ),
     ),
+    # .agent-rfc/designs/gate-local-events.md — gate contract 3: a tenant's commit
+    # and push ask its declared provider, and the knowledge graph is the gate's.
+    Suite(
+        name="gate_contract_v3",
+        tests=("scripts/test/test_gate_contract_v3.py",),
+        mutations=(
+            Mutation(
+                "commit and push at contract 3 fall back to the framework's own gate",
+                ".githooks/process-gate",
+                '      local_by_contract "$@"\n      exit $?',
+                "      true\n      exit $?",
+            ),
+            Mutation(
+                "pre-commit at contract 3 asks the provider for a push decision it does not need",
+                ".githooks/process-gate",
+                '      case " $* " in *" --report "*) return 0 ;; esac',
+                "      :",
+            ),
+            Mutation(
+                "the tenant's hook keeps applying the subject rule at contract 3 — policy back in the shim",
+                ".githooks/commit-msg",
+                "  [3-9]|[1-9][0-9]) ;;",
+                "  __never__) ;;",
+            ),
+            Mutation(
+                "the provider drops the subject rule the hook handed it",
+                "scripts/process_gate.py",
+                "    if not re.match(COMMIT_SUBJECT, subject):",
+                "    if False:",
+            ),
+            Mutation(
+                "a push carrying a commit that skipped the gate is allowed",
+                "scripts/process_gate.py",
+                'decision="deny" if code else "allow",',
+                'decision="allow",',
+            ),
+            Mutation(
+                "the provider answers with a tenant's vendored copy of the gate",
+                "runtime/cli.py",
+                "    if looks_like_framework(here) and",
+                "    if True and",
+            ),
+            Mutation(
+                "kg impact scopes the working tree, not the commit — the review's hash disagrees with the gate's",
+                "scripts/local_knowledge_graph.py",
+                "            graph, changed = staged_graph(), staged_files()",
+                '            graph, changed = staged_graph(), changed_files("HEAD")',
+            ),
+        ),
+    ),
     Suite(
         name="framework_sync",
         tests=(
@@ -1255,10 +1305,10 @@ CATALOGUE: tuple[Suite, ...] = (
                 "    if False:",
             ),
             Mutation(
-                "adopt declares gate contract 1, so a new tenant's CI never asks its provider",
+                "adopt declares an older gate contract, so a new tenant's commits and pushes never ask its provider",
                 "runtime/adopt.py",
+                "GATE_CONTRACT = 3\n",
                 "GATE_CONTRACT = 2\n",
-                "GATE_CONTRACT = 1\n",
             ),
             Mutation(
                 "a scaffold design leaves out the manifest committed beside it",

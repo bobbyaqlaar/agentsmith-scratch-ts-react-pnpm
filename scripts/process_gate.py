@@ -432,11 +432,11 @@ def kg_problems(files: List[str], review_text: str, read: Reader) -> List[str]:
     graph_text = read(KG_FIXTURE)
     if graph_text is None:
         return [f"{KG_FIXTURE} is not in this commit, so the scope of the review cannot be checked — "
-                "build it (`python3 scripts/map_codebase.py`) and commit it"]
+                "build it (`agentsmith gate kg build`) and commit it"]
     try:
         graph = json.loads(graph_text)
     except json.JSONDecodeError as exc:
-        return [f"{KG_FIXTURE} is not valid JSON ({exc}) — rebuild it with scripts/map_codebase.py"]
+        return [f"{KG_FIXTURE} is not valid JSON ({exc}) — rebuild it with `agentsmith gate kg build`"]
     # The files the change LEAVES. A deleted path is nothing a reviewer can read,
     # and whether it is listed at all depends on who asked git: `git diff` detects
     # renames and names only the new path, `git diff-tree` does not and names
@@ -445,8 +445,8 @@ def kg_problems(files: List[str], review_text: str, read: Reader) -> List[str]:
     expected = lkg.impact(graph, [f for f in files if read(f) is not None])
     found = _KG_QUERY.search(review_text)
     if not found:
-        return ["records no 'KG query:' line — run `python3 scripts/local_knowledge_graph.py --impact "
-                f"--base HEAD`, read what it lists, and put its hash in the sign-off ({expected.query})"]
+        return ["records no 'KG query:' line — run `agentsmith gate kg impact --staged`, read what it lists, "
+                f"and put its hash in the sign-off ({expected.query})"]
     if found.group(1) != expected.query:
         return [f"'KG query: {found.group(1)}' is not the scope of this change ({expected.query}) — "
                 f"{len(expected.files)} file(s) are in it, including "
@@ -1029,7 +1029,7 @@ def cmd_session_start(payload: dict) -> int:
                     )
             elif not graph_text:
                 lines.append(f"⚠️ {KG_FIXTURE} is missing — build it with "
-                             "`python3 scripts/map_codebase.py`, and commit it.")
+                             "`agentsmith gate kg build`, and commit it.")
         if not (root / "AGENTS.md").is_file() and (root / "scripts/generate-ide-config.py").is_file():
             # Other agents (Codex, Cursor, Gemini, Copilot) read these, not this hook.
             lines.append(
@@ -1051,18 +1051,39 @@ def cmd_session_start(payload: dict) -> int:
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
+# The commit-subject rule: this provider's policy, applied in its contract-3
+# `commit` answer. Below contract 3 `.githooks/commit-msg` applies the same rule
+# in bash, and a test pins the two equal (.agent-rfc/designs/gate-local-events.md).
+COMMIT_SUBJECT = r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_/-]+\))?!?: .{1,72}$"
+
+
+def _without_comments(message: str) -> str:
+    return "\n".join(line for line in message.splitlines() if not line.startswith("#"))
+
+
 def cmd_commit_msg(message_file: str, amend: bool = False) -> int:
+    message = _without_comments(Path(message_file).read_text(encoding="utf-8"))
+    code, notes, errors = commit_verdict(message, amend)
+    for note in notes:
+        print(f"ℹ️  process gate: {note}")
+    if errors:
+        _record("block", "design-and-review-trailers")
+        print("❌ process gate: commit blocked (AgentSmith docs/process-gates.md)", file=sys.stderr)
+        for error in errors:
+            print(f"   - {error}", file=sys.stderr)
+    return code
+
+
+def commit_verdict(message: str, amend: bool = False) -> Tuple[int, List[str], List[str]]:
+    """May this commit be made: exit code, notes, errors. One judgement for the
+    hook (`commit-msg`) and for gate contract 3's `commit` answer."""
     root = repo_root()
     read = _reader_at(root, "")  # the index: what this commit will contain
     config, problems = parse_config(read(CONFIG))
     if problems:
-        print(f"❌ process gate: commit blocked — {'; '.join(problems)}", file=sys.stderr)
-        return 1
+        return 1, [], [f"commit blocked — {'; '.join(problems)}"]
     if config is None:
-        return 0  # the commit does not carry a config: this repo has not adopted the gates
-    message = "\n".join(
-        line for line in Path(message_file).read_text(encoding="utf-8").splitlines() if not line.startswith("#")
-    )
+        return 0, [], []  # the commit does not carry a config: this repo has not adopted the gates
     # The commit being created replaces HEAD when amending, so its changes are
     # measured from HEAD's parent (or from nothing, for a root commit).
     base = ["HEAD"]
@@ -1105,14 +1126,40 @@ def cmd_commit_msg(message_file: str, amend: bool = False) -> int:
                 "(one per commit) to the message that brings them under a design and review",
             ])
 
-    for note in notes:
-        print(f"ℹ️  process gate: {note}")
+    return (1 if errors else 0), notes, errors
+
+
+def cmd_commit_decision(event: "gm.GateEventV3") -> int:
+    """Gate contract 3's `commit` (contract/gate/v3/protocol.md): this
+    provider's subject rule — moved here from the tenant's hook — then the same
+    judgement the hook makes, answered as one decision on stdout."""
+    message = _without_comments(event.message or "")
+    subject = next((line for line in message.splitlines() if line.strip()), "")
+    if not re.match(COMMIT_SUBJECT, subject):
+        print(gm.DecisionV2(decision="deny", text=(
+            f"the subject must be a Conventional Commit, ≤72 characters after the type — got {subject!r}")
+        ).model_dump_json())
+        return 0
+    _code, notes, errors = commit_verdict(message, event.amend)
     if errors:
         _record("block", "design-and-review-trailers")
-        print("❌ process gate: commit blocked (AgentSmith docs/process-gates.md)", file=sys.stderr)
-        for error in errors:
-            print(f"   - {error}", file=sys.stderr)
-        return 1
+    report = [*(f"- ℹ️ {note}" for note in notes), *(f"- ❌ {error}" for error in errors)]
+    print(gm.DecisionV2(
+        decision="deny" if errors else "allow",
+        text=("the commit is blocked (AgentSmith docs/process-gates.md): " + "; ".join(errors)) if errors
+        else "the commit may be made",
+        report="\n".join(report)).model_dump_json())
+    return 0
+
+
+def cmd_push_decision() -> int:
+    """Gate contract 3's `push`: the bypass sweep, as one decision."""
+    code, report, _failures = sweep(repo_root())
+    print(gm.DecisionV2(
+        decision="deny" if code else "allow",
+        text=("commits in this history did not pass the gate — repair them (agentsmith gates repair), "
+              "then push again") if code else "this history may be pushed",
+        report="\n".join(report)).model_dump_json())
     return 0
 
 
@@ -2018,9 +2065,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     sweep_cmd = sub.add_parser("sweep")
     sweep_cmd.add_argument("--report", action="store_true",
                            help="report and re-arm, but do not refuse (pre-commit; commit-msg decides)")
+    sweep_cmd.add_argument("--decision", action="store_true",
+                           help="answer gate contract 3's `push`: one decision on stdout")
     msg = sub.add_parser("commit-msg")
     msg.add_argument("--amend", action="store_true", help="the commit replaces HEAD (git commit --amend)")
-    msg.add_argument("message_file")
+    msg.add_argument("--decision", action="store_true",
+                     help="answer gate contract 3's `commit`: the event on stdin, one decision on stdout")
+    msg.add_argument("message_file", nargs="?")
     ci = sub.add_parser("ci")
     ci.add_argument("--base", default="")
     ci.add_argument("--head", default="HEAD")
@@ -2056,8 +2107,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                   "fix process_gate.py or its input before editing gated paths")
             return 0
     if args.command == "sweep":
+        if args.decision:
+            return _traced("sweep", repo_root(), cmd_push_decision)
         return _traced("sweep", repo_root(), lambda: cmd_sweep(args.report))
     if args.command == "commit-msg":
+        if args.decision:
+            raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+            try:
+                event = gm.GateEventV3.model_validate_json(raw or "{}")
+                if event.kind != "commit":
+                    raise ValueError(f"kind is {event.kind!r}, and `commit` asks about a commit")
+            except ValueError as exc:  # pydantic's ValidationError is a ValueError
+                print(gm.DecisionV2(decision="deny",
+                                    text=f"not a commit event (contract/gate/v3/event.schema.json): {exc}"
+                                    ).model_dump_json())
+                return 0
+            return _traced("commit-msg", repo_root(), lambda: cmd_commit_decision(event))
+        if not args.message_file:
+            parser.error("commit-msg needs the message file (or --decision with the event on stdin)")
         return _traced("commit-msg", repo_root(), lambda: cmd_commit_msg(args.message_file, amend=args.amend))
     if args.decision:
         # The event arrives on stdin, as every contract event does; --base and

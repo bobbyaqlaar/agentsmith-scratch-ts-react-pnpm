@@ -970,31 +970,48 @@ def _cmd_tenant_adopt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _provider_scripts() -> Optional[Path]:
+    """The scripts this provider answers with: its own installation's. The
+    repository being asked about is used only when it IS the framework checkout
+    — a tenant's vendored copy is the tenant's, possibly stale, and a provider
+    answering with it would judge the tenant by code the tenant holds
+    (.agent-rfc/designs/gate-local-events.md)."""
+    here = Path.cwd()
+    if looks_like_framework(here) and (here / "scripts" / "process_gate.py").is_file():
+        return here / "scripts"
+    framework = _framework_dir()
+    if framework is not None and (framework / "scripts" / "process_gate.py").is_file():
+        return framework / "scripts"
+    return None
+
+
 def _cmd_gate(args: argparse.Namespace) -> int:
     """`agentsmith gate <event>` — AgentSmith as a gate provider
-    (contract/gate/v1/protocol.md). The neutral profile over the same decision
+    (contract/gate/v3/protocol.md). The neutral profile over the same decision
     path every IDE dialect goes through: one implementation of what a rule means.
 
     Exit 3 — the contract's "this provider cannot run here" — when the gate
     itself is not on this machine, so a caller can try the next provider."""
     import subprocess as sp
 
-    framework = _framework_dir()
-    gate = None
-    for candidate in (Path.cwd() / "scripts", framework / "scripts" if framework else None):
-        if candidate is not None and (candidate / "process_gate.py").is_file():
-            gate = candidate / "process_gate.py"
-            break
-    if gate is None:
-        print("agentsmith gate: no process_gate.py in this repo, $AGENTSMITH_DIR or ~/.agent-framework — "
+    scripts = _provider_scripts()
+    if scripts is None:
+        print("agentsmith gate: no process_gate.py in $AGENTSMITH_DIR or ~/.agent-framework — "
               "run install-ai-stack.sh", file=sys.stderr)
         return 3
+    gate = scripts / "process_gate.py"
+    if args.event == "kg":
+        return _gate_kg(scripts, args.verb, args.base)
     # The dialect the caller asked for, or the contract's neutral profile. A
     # provider that serves IDE hooks accepts --ide and translates; conformance
-    # pins the neutral profile (contract/gate/v1/protocol.md).
-    # `ci` is contract 2's: a range, answered by the same run CI made by path
-    # (contract/gate/v2/protocol.md). The three v1 events keep their dialects.
-    command = ["ci", "--decision"] if args.event == "ci" else [args.event, "--ide", args.ide or "neutral"]
+    # pins the neutral profile (contract/gate/v1/protocol.md). `ci` is contract
+    # 2's; `commit` and `push` are contract 3's — each answered by the same run
+    # the hook or CI made by path (contract/gate/v3/protocol.md).
+    command = {
+        "ci": ["ci", "--decision"],
+        "commit": ["commit-msg", "--decision"],
+        "push": ["sweep", "--decision"],
+    }.get(args.event, [args.event, "--ide", args.ide or "neutral"])
     done = sp.run([sys.executable, str(gate), *command],
                   input=sys.stdin.read() if not sys.stdin.isatty() else "{}",
                   capture_output=True, text=True, check=False)
@@ -1009,6 +1026,23 @@ def _cmd_gate(args: argparse.Namespace) -> int:
         return 0
     sys.stdout.write(done.stdout)
     return done.returncode
+
+
+def _gate_kg(scripts: Path, verb: Optional[str], base: Optional[str]) -> int:
+    """`agentsmith gate kg build|impact` — contract 3's knowledge-graph verbs:
+    build the repository's graph, or name a change's review scope as JSON
+    (contract/gate/v3/protocol.md). `impact` is the commit being made unless
+    `--base` names a ref — the scope the commit gate checks a review against."""
+    import subprocess as sp
+
+    if verb == "build":
+        return sp.run([sys.executable, str(scripts / "map_codebase.py"), "--quiet"], check=False).returncode
+    if verb == "impact":
+        scope = ["--base", base] if base else ["--staged"]
+        return sp.run([sys.executable, str(scripts / "local_knowledge_graph.py"), "--impact", "--json", *scope],
+                      check=False).returncode
+    print("agentsmith gate kg: build | impact [--staged | --base REF]", file=sys.stderr)
+    return 2
 
 
 def _cmd_conformance(args: argparse.Namespace) -> int:
@@ -1317,8 +1351,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_cmd.add_argument("--yes", action="store_true", help="sync without asking (required off a terminal)")
     sync_cmd.set_defaults(func=_cmd_sync)
 
-    gate = sub.add_parser("gate", help="answer a gate event (contract/gate/v2 — the neutral profile)")
-    gate.add_argument("event", choices=("session-start", "pre-edit", "stop", "ci"))
+    gate = sub.add_parser("gate", help="answer a gate event (contract/gate/v3 — the neutral profile)")
+    gate.add_argument("event", choices=("session-start", "pre-edit", "stop", "ci", "commit", "push", "kg"))
+    gate.add_argument("verb", nargs="?", choices=("build", "impact"), help="for kg: build or impact")
+    gate.add_argument("--staged", action="store_true", help="kg impact: the commit being made (the default)")
+    gate.add_argument("--base", default=None, metavar="REF", help="kg impact: diff the working tree against REF")
     gate.add_argument("--ide", default=None,
                       help="the dialect the payload is in (default: the contract's neutral profile)")
     gate.set_defaults(func=_cmd_gate)
@@ -1326,8 +1363,8 @@ def build_parser() -> argparse.ArgumentParser:
     conformance = sub.add_parser("conformance", help="does a command satisfy the gate contract?")
     conformance.add_argument("--provider", required=True, metavar="COMMAND",
                              help='the provider to test, e.g. "agentsmith gate"')
-    conformance.add_argument("--contract", type=int, default=1, choices=(1, 2),
-                             help="the gate contract version to score against (2 adds the ci event)")
+    conformance.add_argument("--contract", type=int, default=1, choices=(1, 2, 3),
+                             help="the gate contract version to score against (2 adds ci; 3 commit, push and kg)")
     conformance.set_defaults(func=_cmd_conformance)
 
     promote_tenant = tenant.add_parser("promote", help="gate on staging evals, then open the develop → main PR")

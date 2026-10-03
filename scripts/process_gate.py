@@ -1164,10 +1164,14 @@ def cmd_push_decision() -> int:
 
 
 def _range_commits(root: Path, base: str, head: str) -> Tuple[List[str], Optional[str]]:
+    # The head as a commit hash, not as the caller spelled it: a range by ref
+    # (`after`, `HEAD`) otherwise put the ref into the record, which no receiver
+    # can store — caught by validating the record (contract/record/v1).
+    only = git("rev-parse", "--verify", f"{head}^{{commit}}", cwd=root, check=False).strip() or head
     if not base or set(base) == {"0"}:
-        return [head], "no base commit (new branch or first push): checked the head commit only"
+        return [only], "no base commit (new branch or first push): checked the head commit only"
     if subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], cwd=root, check=False).returncode != 0:
-        return [head], f"base {base[:12]} is not in this history (force-push?): checked the head commit only"
+        return [only], f"base {base[:12]} is not in this history (force-push?): checked the head commit only"
     out = git("rev-list", "--reverse", "--no-merges", f"{base}..{head}", cwd=root)
     return [c for c in out.splitlines() if c], None
 
@@ -1191,10 +1195,24 @@ def _report(lines: List[str], annotations: List[str]) -> None:
 # verdict and never re-derives one (.agent-rfc/designs/portal-phase1.md).
 
 DEV_RECORD_SCHEMA = 1
-# Every verdict a record can carry. The portal refuses any other
-# (portal/lib/devIngest.ts DEV_VERDICTS, and a CHECK on dev_commits.verdict);
-# scripts/test/test_dev_record.py pins the three together.
-DEV_VERDICTS = ("passed", "failed", "passed_with_notes", "not_gated", "before_adoption")
+# Every verdict a record can carry — the record contract's catalogue
+# (contract/record/v1/, generated from gate_models). The portal refuses any
+# other, and its tests hold it to the published schema.
+DEV_VERDICTS = gm.RECORD_VERDICTS if UNUSABLE is None else ()
+
+
+def record_problem(document: Dict[str, object]) -> Optional[str]:
+    """Why `document` would not satisfy contract/record/v1, or None. Checked
+    part by part, as it is sent: the 500-commit limit is per request
+    (.agent-rfc/designs/record-contract.md)."""
+    import send_dev_record
+
+    for number, part in enumerate(send_dev_record._parts(document), start=1):
+        try:
+            gm.DevRecord.model_validate(part)
+        except ValueError as exc:  # pydantic's ValidationError is a ValueError
+            return f"part {number}: {exc}"
+    return None
 
 
 def design_summary(text: str, registry: Optional["gm.Registry"] = None) -> Dict[str, object]:
@@ -1436,6 +1454,13 @@ def ci_verdict(base: str, head: str, record: bool = False, json_path: Optional[s
         run = [os.environ.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID")]
         if all(run):
             document["ci_run_url"] = f"{run[0]}/{run[1]}/actions/runs/{run[2]}"
+        # Checked before it is written or sent: a record the contract would
+        # refuse is this gate's defect, and it fails the run here rather than in
+        # the portal, sent short or not at all without a word.
+        problem = record_problem(document)
+        if problem:
+            why = f"the record this gate built does not satisfy contract/record/v1 — a gate defect: {problem}"
+            return 1, ["## Process gates", "", f"- ❌ {why}"], [f"::error title=Process gate::{why}"], None
         if json_path:
             Path(json_path).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 

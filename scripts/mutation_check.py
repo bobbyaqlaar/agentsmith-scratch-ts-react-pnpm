@@ -1127,6 +1127,50 @@ CATALOGUE: tuple[Suite, ...] = (
             ),
         ),
     ),
+    # .agent-rfc/designs/record-contract.md — the record a gate provider sends a
+    # portal: one model, both sides held to it, and conformance that can fail.
+    Suite(
+        name="record_contract",
+        tests=("scripts/test/test_record_contract.py",),
+        mutations=(
+            Mutation(
+                "the gate stops validating the record before it sends it",
+                "scripts/process_gate.py",
+                "            gm.DevRecord.model_validate(part)",
+                "            pass",
+            ),
+            Mutation(
+                "a range named by ref records the ref, not the commit — a record no receiver can store",
+                "scripts/process_gate.py",
+                '    only = git("rev-parse", "--verify", f"{head}^{{commit}}", cwd=root, check=False).strip() or head',
+                "    only = head",
+            ),
+            Mutation(
+                "the receiver suite passes a receiver whatever it answers",
+                "runtime/conformance.py",
+                "        checks.append(Check(case.name, status == case.expect,",
+                "        checks.append(Check(case.name, True,",
+            ),
+            Mutation(
+                "the sender suite passes a sender that sends nothing",
+                "runtime/conformance.py",
+                '                            decision == "allow" and bool(received) and problem is None,',
+                '                            decision == "allow",',
+            ),
+            Mutation(
+                "the sender suite passes a sender that follows a redirect with the token",
+                "runtime/conformance.py",
+                '                            decision == "deny" and not elsewhere,',
+                "                            True,",
+            ),
+            Mutation(
+                "the sender suite passes a sender that sends no token",
+                "runtime/conformance.py",
+                '        bearer = bool(received) and all(auth == f"Bearer {token}" for auth, _body in received)',
+                "        bearer = True",
+            ),
+        ),
+    ),
     # .agent-rfc/designs/gate-local-events.md — gate contract 3: a tenant's commit
     # and push ask its declared provider, and the knowledge graph is the gate's.
     Suite(

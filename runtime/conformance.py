@@ -24,6 +24,7 @@ import os
 import re
 import shlex
 import subprocess
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -221,3 +222,216 @@ def run(provider: str, workdir: Path, contract: int = CONTRACT_VERSION) -> Repor
         _arrange(root, case.arrange)
         results.append(_judge(case, *_ask(provider, case, root)))
     return Report(provider=provider, results=results, contract=contract)
+
+
+# ── The record contract (contract/record/v1/protocol.md) ─────────────────────
+#
+# Two parties, two runs. A receiver is sent the contract's cases and judged by
+# status; a sender is run against the gate fixture with a loopback receiver in
+# front of it, and judged by what it sent and how it answered
+# (.agent-rfc/designs/record-contract.md).
+
+RECORD_CONTRACT = 1
+# What AgentSmith's provider reads; another provider names its own (--url-env, --token-env).
+SENDER_URL_ENV = "AGENTSMITH_PORTAL_URL"
+SENDER_TOKEN_ENV = "AGENTSMITH_PORTAL_INGEST_TOKEN"
+RECEIVER_TOKEN_ENV = "GOVERNANCE_RECORD_TOKEN"
+
+
+def _record_dir() -> Path:
+    for root in (Path(os.environ["AGENTSMITH_DIR"]) if os.environ.get("AGENTSMITH_DIR") else None,
+                 Path(__file__).resolve().parent.parent, Path.home() / ".agent-framework"):
+        if root is not None and (root / "contract" / "record" / f"v{RECORD_CONTRACT}" / "cases.json").is_file():
+            return root / "contract" / "record" / f"v{RECORD_CONTRACT}"
+    raise FileNotFoundError(f"contract/record/v{RECORD_CONTRACT}/ not found in $AGENTSMITH_DIR, beside this "
+                            "package, or ~/.agent-framework — re-run install-ai-stack.sh")
+
+
+class RecordCase(BaseModel):
+    """One case from contract/record/v1/cases.json — data, validated on the way in."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    token: str
+    expect: int
+    why: str = ""
+    set: dict = Field(default_factory=dict)
+    repeat_commits: int = 0
+    pad: int = 0
+
+
+@dataclass(frozen=True)
+class Check:
+    name: str
+    ok: bool
+    why: str = ""
+
+
+@dataclass(frozen=True)
+class RecordReport:
+    party: str
+    target: str
+    checks: list[Check]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.checks) and all(c.ok for c in self.checks)
+
+    def render(self) -> str:
+        lines = [f"record contract v{RECORD_CONTRACT} — {self.party}: {self.target}", ""]
+        lines += [f"  {'✅' if c.ok else '❌'} {c.name}" + (f" — {c.why}" if c.why else "") for c in self.checks]
+        kept = sum(1 for c in self.checks if c.ok)
+        lines += ["", f"{kept}/{len(self.checks)} checks" + ("" if self.passed else " — not conformant")]
+        return "\n".join(lines)
+
+
+def record_cases() -> list[RecordCase]:
+    data = json.loads((_record_dir() / "cases.json").read_text(encoding="utf-8"))
+    return [RecordCase.model_validate({k: v for k, v in case.items() if not k.startswith("_")})
+            for case in data["cases"]]
+
+
+def record_body(case: RecordCase) -> bytes:
+    """The fixture's record with the one thing this case changes."""
+    import copy
+
+    body = copy.deepcopy(json.loads((_record_dir() / "fixture.json").read_text(encoding="utf-8"))["record"])
+    for path, value in case.set.items():
+        *parents, last = path.split(".")
+        node = body
+        for key in parents:
+            node = node[int(key)] if isinstance(node, list) else node[key]
+        if isinstance(node, list):
+            node[int(last)] = value
+        else:
+            node[last] = value
+    if case.repeat_commits:
+        body["commits"] = [body["commits"][0]] * case.repeat_commits
+    if case.pad:
+        body["_pad"] = "x" * case.pad
+    return json.dumps(body).encode("utf-8")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None  # the redirect's status is the answer; nothing follows it
+
+
+def run_record_receiver(url: str, token: str) -> RecordReport:
+    """Send every case to the receiver at `url` and judge each by its status."""
+    import secrets
+    import urllib.error
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    checks = []
+    for case in record_cases():
+        headers = {"content-type": "application/json"}
+        if case.token == "valid":
+            headers["authorization"] = f"Bearer {token}"
+        elif case.token == "unknown":
+            headers["authorization"] = f"Bearer conformance-unknown-{secrets.token_hex(8)}"
+        request = urllib.request.Request(url, data=record_body(case), method="POST", headers=headers)
+        try:
+            with opener.open(request, timeout=60) as response:
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except (urllib.error.URLError, OSError) as exc:
+            checks.append(Check(case.name, False, f"no answer: {exc}"))
+            continue
+        checks.append(Check(case.name, status == case.expect,
+                            "" if status == case.expect else f"expected {case.expect}, got {status}"))
+    return RecordReport(party="receiver", target=url, checks=checks)
+
+
+def run_record_sender(provider: str, workdir: Path, url_env: str = SENDER_URL_ENV,
+                      token_env: str = SENDER_TOKEN_ENV) -> RecordReport:
+    """Run the provider's `ci` four times, against a loopback receiver that
+    stores, redirects, refuses the token, and is unwell."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    received: list[tuple[str, bytes]] = []
+    elsewhere: list[str] = []
+    mode = {"status": 200, "location": ""}
+
+    class Receiver(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("content-length", 0)))
+            if self.server is other:
+                elsewhere.append(self.headers.get("authorization", ""))
+            else:
+                received.append((self.headers.get("authorization", ""), body))
+            status = 200 if self.server is other else mode["status"]
+            payload = json.dumps({"stored": 1} if status == 200 else {"error": "conformance"}).encode()
+            self.send_response(status)
+            if status in (301, 302, 307, 308):
+                self.send_header("location", mode["location"] + self.path)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+    other = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+    for s in (server, other):
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    root = build_fixture(Path(workdir), 2)
+    token = "conformance-record-token"
+    env = {**os.environ, url_env: f"http://127.0.0.1:{server.server_port}", token_env: token}
+
+    def decide() -> Optional[str]:
+        done = subprocess.run([*shlex.split(provider), "ci"], cwd=root, env=env, capture_output=True, text=True,
+                              input=json.dumps({"kind": "range", "base": "fixture", "head": "clean"}), check=False)
+        try:
+            return str(json.loads(done.stdout)["decision"])
+        except (ValueError, KeyError, TypeError):
+            return None
+
+    checks = []
+    try:
+        mode.update(status=200)
+        decision = decide()
+        problem = _record_schema_problem([body for _auth, body in received])
+        checks.append(Check("a stored record is sent, and satisfies the schema",
+                            decision == "allow" and bool(received) and problem is None,
+                            f"decision {decision}, {len(received)} request(s){'; ' + problem if problem else ''}"
+                            if not (decision == "allow" and received and problem is None) else ""))
+        bearer = bool(received) and all(auth == f"Bearer {token}" for auth, _body in received)
+        checks.append(Check("it carries the token as a bearer", bearer))
+        received.clear()
+        mode.update(status=302, location=f"http://127.0.0.1:{other.server_port}")
+        decision = decide()
+        checks.append(Check("a redirect is not followed, and fails the answer",
+                            decision == "deny" and not elsewhere,
+                            "" if decision == "deny" and not elsewhere else
+                            f"decision {decision}; the redirect target was sent {len(elsewhere)} request(s)"))
+        mode.update(status=401)
+        decision = decide()
+        checks.append(Check("a refused token fails the answer", decision == "deny", f"decision {decision}"
+                            if decision != "deny" else ""))
+        mode.update(status=503)
+        decision = decide()
+        checks.append(Check("an unwell receiver does not fail the answer", decision == "allow",
+                            f"decision {decision}" if decision != "allow" else ""))
+    finally:
+        server.shutdown()
+        other.shutdown()
+    return RecordReport(party="sender", target=provider, checks=checks)
+
+
+def _record_schema_problem(bodies: list[bytes]) -> Optional[str]:
+    """Why a sent body does not satisfy record.schema.json, or None."""
+    import jsonschema
+
+    schema = json.loads((_record_dir() / "record.schema.json").read_text(encoding="utf-8"))
+    for number, body in enumerate(bodies, start=1):
+        try:
+            jsonschema.validate(json.loads(body), schema)
+        except (ValueError, jsonschema.ValidationError) as exc:
+            return f"request {number}: {getattr(exc, 'message', exc)}"
+    return None

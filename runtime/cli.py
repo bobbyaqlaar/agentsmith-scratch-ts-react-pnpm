@@ -1045,6 +1045,35 @@ def _gate_kg(scripts: Path, verb: Optional[str], base: Optional[str]) -> int:
     return 2
 
 
+def _record_conformance(args: argparse.Namespace) -> int:
+    """`agentsmith conformance --port record --sender CMD | --receiver URL`
+    (contract/record/v1/protocol.md)."""
+    import tempfile
+
+    from runtime import conformance as rc
+
+    if bool(args.sender) == bool(args.receiver):
+        print("agentsmith conformance --port record: give --sender COMMAND or --receiver URL", file=sys.stderr)
+        return 2
+    try:
+        if args.receiver:
+            token = os.environ.get(rc.RECEIVER_TOKEN_ENV, "").strip()
+            if not token:
+                print(f"agentsmith conformance: set {rc.RECEIVER_TOKEN_ENV} to a test token the receiver issued",
+                      file=sys.stderr)
+                return 2
+            report = rc.run_record_receiver(args.receiver, token)
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                report = rc.run_record_sender(args.sender, Path(tmp) / "fixture",
+                                              args.url_env or rc.SENDER_URL_ENV, args.token_env or rc.SENDER_TOKEN_ENV)
+    except FileNotFoundError as exc:
+        print(f"agentsmith: {exc}", file=sys.stderr)
+        return 2
+    print(report.render())
+    return 0 if report.passed else 1
+
+
 def _cmd_conformance(args: argparse.Namespace) -> int:
     """`agentsmith conformance --provider "<command>"` — does that command
     satisfy the gate contract? Run it against another platform's adapter, or
@@ -1053,6 +1082,11 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
 
     from runtime.conformance import run
 
+    if args.port == "record":
+        return _record_conformance(args)
+    if not args.provider:
+        print("agentsmith conformance: --provider is required for the gate contract", file=sys.stderr)
+        return 2
     with tempfile.TemporaryDirectory() as tmp:
         try:
             report = run(args.provider, Path(tmp) / "fixture", args.contract)
@@ -1360,9 +1394,19 @@ def build_parser() -> argparse.ArgumentParser:
                       help="the dialect the payload is in (default: the contract's neutral profile)")
     gate.set_defaults(func=_cmd_gate)
 
-    conformance = sub.add_parser("conformance", help="does a command satisfy the gate contract?")
-    conformance.add_argument("--provider", required=True, metavar="COMMAND",
-                             help='the provider to test, e.g. "agentsmith gate"')
+    conformance = sub.add_parser("conformance", help="does a command or a portal satisfy a contract?")
+    conformance.add_argument("--port", choices=("gate", "record"), default="gate",
+                             help="the contract: the gate (a provider command) or the record (a sender or a receiver)")
+    conformance.add_argument("--provider", metavar="COMMAND",
+                             help='the gate provider to test, e.g. "agentsmith gate"')
+    conformance.add_argument("--sender", metavar="COMMAND",
+                             help="record: a gate provider that sends records, run against a loopback receiver")
+    conformance.add_argument("--receiver", metavar="URL",
+                             help="record: a portal's ingest address; the token is read from GOVERNANCE_RECORD_TOKEN")
+    conformance.add_argument("--url-env", default=None, metavar="NAME",
+                             help="record --sender: the variable the provider reads its receiver from")
+    conformance.add_argument("--token-env", default=None, metavar="NAME",
+                             help="record --sender: the variable the provider reads its token from")
     conformance.add_argument("--contract", type=int, default=1, choices=(1, 2, 3),
                              help="the gate contract version to score against (2 adds ci; 3 commit, push and kg)")
     conformance.set_defaults(func=_cmd_conformance)

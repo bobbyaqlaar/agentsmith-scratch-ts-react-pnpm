@@ -19,17 +19,19 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 __all__ = [
+    "RECORD_LIMITS",
     "Allowance",
     "Approval",
     "Artifact",
     "Artifacts",
     "Decision",
     "DecisionV2",
+    "DevRecord",
     "Deviation",
     "Extends",
     "GateEvent",
@@ -42,6 +44,7 @@ __all__ = [
     "KnowledgeGraph",
     "Pillar",
     "PillarPolicy",
+    "RecordCommit",
     "Records",
     "Registry",
     "Signoff",
@@ -205,6 +208,107 @@ class KgImpact(_Frozen):
     groups: list[int]
     unknown: list[str] = Field(default_factory=list)
     query: str = Field(pattern=r"^kg:[0-9a-f]{12}$")
+
+
+# ── The record a gate provider sends a portal (contract/record/v1/) ─────────
+#
+# One request body. The limits are the receiver's, published so a sender can
+# keep inside them; `record.schema.json` is generated from these models, and the
+# portal's validator (portal/lib/devIngest.ts) is held to that file by its tests
+# (.agent-rfc/designs/record-contract.md). Unknown keys are allowed: a receiver
+# drops what it does not read, so a sender adding one breaks nobody.
+
+RECORD_LIMITS = {"commits": 500, "subject": 1000, "text": 4000, "list": 200, "designs": 1000,
+                 "body_bytes": 2_000_000}
+RECORD_VERDICTS = ("passed", "failed", "passed_with_notes", "not_gated", "before_adoption")
+RECORD_PILLAR_KINDS = ("applies", "n/a", "gap", "deviation", "unrecognised")
+
+_Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")]
+_Text = Annotated[str, Field(max_length=RECORD_LIMITS["text"])]
+_Short = Annotated[str, Field(max_length=32)]
+_Verdict = Literal["passed", "failed", "passed_with_notes", "not_gated", "before_adoption"]
+_PillarKind = Literal["applies", "n/a", "gap", "deviation", "unrecognised"]
+_PillarId = Annotated[str, Field(pattern=r"^P\d{1,3}$")]
+
+
+class _Record(BaseModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+
+class RecordDeviation(_Record):
+    id: _Short
+    text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approval_id: _Short | None = None
+
+
+class _DesignFields(_Record):
+    title: _Text | None = None
+    status: _Short | None = None
+    scope: list[_Text] = Field(default_factory=list, max_length=RECORD_LIMITS["list"])
+    # `propertyNames` as well as the key pattern: a receiver refuses a key that is
+    # not a pillar, so the published schema must too, or a sender it passes is refused.
+    pillars: dict[_PillarId, _PillarKind] = Field(
+        default_factory=dict, max_length=RECORD_LIMITS["list"],
+        json_schema_extra={"propertyNames": {"pattern": r"^P\d{1,3}$"}})
+    deviations: list[RecordDeviation] = Field(default_factory=list, max_length=RECORD_LIMITS["list"])
+
+
+class RecordDesign(_DesignFields):
+    """The design a commit names: resolved, or the reason it could not be."""
+
+    ref: _Text
+    path: _Text | None = None
+    resolved: bool
+    reason: _Text | None = None
+
+
+class RecordHeadDesign(_DesignFields):
+    """A design document as it stands at the head."""
+
+    path: _Text
+
+
+class RecordPass(_Record):
+    n: int = Field(ge=0)
+    findings: int = Field(ge=0)
+
+
+class RecordReview(_Record):
+    ref: _Text
+    path: _Text | None = None
+    resolved: bool
+    reason: _Text | None = None
+    passes: list[RecordPass] = Field(default_factory=list, max_length=RECORD_LIMITS["list"])
+    signed_off: bool | None = None
+    kg_query: Annotated[str, Field(max_length=64)] | None = None
+
+
+class RecordCommit(_Record):
+    commit: _Sha
+    parent: _Sha | None = None
+    subject: Annotated[str, Field(max_length=RECORD_LIMITS["subject"])]
+    author_name: Annotated[str, Field(max_length=320)] | None = None
+    author_email: Annotated[str, Field(max_length=320)] | None = None
+    committed_at: Annotated[str, Field(max_length=64)] | None = None
+    adopted: bool
+    gated: bool
+    verdict: _Verdict
+    errors: list[_Text] = Field(default_factory=list, max_length=RECORD_LIMITS["list"])
+    notes: list[_Text] = Field(default_factory=list, max_length=RECORD_LIMITS["list"])
+    repairs: list[_Sha] = Field(default_factory=list, max_length=RECORD_LIMITS["list"])
+    design: RecordDesign | None = None
+    review: RecordReview | None = None
+
+
+class DevRecord(_Record):
+    """One request body: what a gate provider decided about each commit of a
+    range, and the designs at its head (on the last part of a long range)."""
+
+    schema_version: Literal[1] = Field(alias="schema")
+    head: _Sha
+    commits: list[RecordCommit] = Field(max_length=RECORD_LIMITS["commits"])
+    designs: list[RecordHeadDesign] | None = Field(default=None, max_length=RECORD_LIMITS["designs"])
+    ci_run_url: Annotated[str, Field(pattern=r"^https?://")] | None = None
 
 
 class Ide(_Frozen):

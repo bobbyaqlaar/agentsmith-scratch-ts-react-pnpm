@@ -685,3 +685,152 @@ def run_rules(provider: str, workdir: Path) -> RulesReport:
         else:
             checks.append(_judge_check(case, provider, root, target))
     return RulesReport(provider, checks)
+
+
+# ── The telemetry contract (contract/telemetry/v1/) ──────────────────────────
+#
+# A wire contract: the emitter is judged by what it EXPORTS, never by its code.
+# `--export` reads an OTLP/JSON file; `--emitter` runs a command against a
+# loopback OTLP receiver. `telemetry_cases()` is the judge's own test — each
+# case changes one thing in the golden export that the judge must notice
+# (.agent-rfc/designs/telemetry-contract.md).
+
+
+@dataclass(frozen=True)
+class TelemetryReport:
+    source: str
+    checks: list
+    notes: list[str]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.checks) and all(c.ok for c in self.checks)
+
+    def render(self) -> str:
+        from runtime.telemetry_contract import TELEMETRY_CONTRACT
+
+        lines = [f"telemetry contract v{TELEMETRY_CONTRACT} — {self.source}", ""]
+        lines += [f"  {'✅' if c.ok else '❌'} {c.name}" + (f" — {c.why}" if c.why else "") for c in self.checks]
+        lines += [f"  ℹ️  {note}" for note in self.notes]
+        kept = sum(1 for c in self.checks if c.ok)
+        lines += ["", f"{kept}/{len(self.checks)} checks" + ("" if self.passed else " — not conformant")]
+        return "\n".join(lines)
+
+
+def _judge_agrees():
+    """Does this judge decide the contract's own cases? Checked first on every
+    run: a report from a judge that disagrees with the contract it names is not
+    a verdict on the emitter."""
+    from runtime.telemetry_contract import Check
+
+    wrong = [f"{case.name}: {why}" for case in telemetry_cases() for ok, why in [judge_case(case)] if not ok]
+    return Check("the judge decides the contract's own cases", not wrong, "; ".join(wrong[:2]))
+
+
+def run_telemetry_export(path: Path) -> TelemetryReport:
+    from runtime.telemetry_contract import exports_from_file, judge
+
+    verdict = judge(exports_from_file(path))
+    return TelemetryReport(f"export: {path}", [_judge_agrees(), *verdict.checks], verdict.notes)
+
+
+_OTLP_DESTINATIONS = ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                      "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "AGENT_PHOENIX_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS")
+
+
+def run_telemetry_emitter(command: str, timeout: int = 300) -> TelemetryReport:
+    """Run `command` with its OTLP export pointed at a loopback receiver, and
+    judge what arrived. Its own destinations are removed from its environment,
+    so nothing it emits leaves this machine during the run."""
+    from runtime.telemetry_contract import Check, LoopbackCollector, judge
+
+    with LoopbackCollector() as collector:
+        env = {k: v for k, v in os.environ.items() if k not in _OTLP_DESTINATIONS}
+        env.update({"OTEL_EXPORTER_OTLP_ENDPOINT": collector.endpoint, "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                    "OTEL_METRIC_EXPORT_INTERVAL": "1000"})
+        try:
+            done = subprocess.run(shlex.split(command), env=env, capture_output=True, text=True, check=False,
+                                  timeout=timeout)
+            ran = Check("the emitter ran", done.returncode == 0,
+                        "" if done.returncode == 0 else f"exit {done.returncode}: {done.stderr.strip()[-300:]}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            ran = Check("the emitter ran", False, str(exc))
+        exports, problems = list(collector.exports), list(collector.problems)
+    verdict = judge(exports)
+    checks = [_judge_agrees(), ran, *verdict.checks]
+    if problems:
+        checks.append(Check("every body it sent was OTLP", False, "; ".join(problems[:3])))
+    return TelemetryReport(f"emitter: {command}", checks, verdict.notes)
+
+
+class TelemetryCase(BaseModel):
+    """One case from contract/telemetry/v1/cases.json — data, validated on the way in."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    change: list[dict] = Field(default_factory=list)
+    expect: dict
+
+
+def _telemetry_dir() -> Path:
+    from runtime.telemetry_contract import contract_dir
+
+    return contract_dir()
+
+
+def telemetry_cases() -> list[TelemetryCase]:
+    data = json.loads((_telemetry_dir() / "cases.json").read_text(encoding="utf-8"))
+    return [TelemetryCase.model_validate(case) for case in data["cases"]]
+
+
+def telemetry_exports(case: TelemetryCase) -> list[dict]:
+    """fixture.json's exports with the case's changes applied, in order."""
+    import copy
+
+    exports = copy.deepcopy(json.loads((_telemetry_dir() / "fixture.json").read_text(encoding="utf-8"))["exports"])
+
+    def edit(attributes: list, change: dict) -> list:
+        kept = [a for a in attributes if a.get("key") != change.get("drop")]
+        for key, value in (change.get("set") or {}).items():
+            kept = [a for a in kept if a.get("key") != key] + [{"key": key, "value": value}]
+        return kept
+
+    for change in case.change:
+        op = change["op"]
+        if op == "empty":
+            exports = []
+            continue
+        for export in exports:
+            for block in export.get("resourceSpans", []) + export.get("resourceMetrics", []):
+                if op == "resource":
+                    resource = block.setdefault("resource", {})
+                    resource["attributes"] = edit(resource.get("attributes", []), change)
+                for scope in block.get("scopeSpans", []):
+                    for span in scope.get("spans", []):
+                        if op == "spans" or (op == "span" and span.get("name", "").startswith(change["match"])):
+                            span["attributes"] = edit(span.get("attributes", []), change)
+                for scope in block.get("scopeMetrics", []):
+                    for metric in scope.get("metrics", []):
+                        if op == "metric" and metric.get("name") == change["match"]:
+                            metric["unit"] = change["unit"]
+        if op not in ("resource", "span", "spans", "metric"):
+            raise ValueError(f"unknown change {op!r}")
+    return exports
+
+
+def judge_case(case: TelemetryCase) -> tuple[bool, str]:
+    """Does AgentSmith's judge decide `case` as the contract says? (ok, why not)"""
+    from runtime.telemetry_contract import judge
+
+    verdict = judge(telemetry_exports(case))
+    failed = sorted(c.name for c in verdict.checks if not c.ok)
+    if case.expect.get("passed"):
+        if failed:
+            return False, f"judged non-conformant: {', '.join(failed)}"
+    elif failed != [case.expect["failed"]]:
+        return False, f"failed {failed or 'nothing'}, the contract says exactly {case.expect['failed']!r}"
+    note = case.expect.get("note")
+    if note and not any(note in n for n in verdict.notes):
+        return False, f"the report does not note {note}"
+    return True, ""

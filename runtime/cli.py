@@ -1090,6 +1090,23 @@ def _rules_conformance(args: argparse.Namespace) -> int:
     return 0 if report.passed else 1
 
 
+def _telemetry_conformance(args: argparse.Namespace) -> int:
+    """`agentsmith conformance --port telemetry --export FILE | --emitter CMD`
+    (contract/telemetry/v1/protocol.md)."""
+    from runtime import conformance as rc
+
+    if bool(args.export) == bool(args.emitter):
+        print("agentsmith conformance --port telemetry: give --export FILE or --emitter COMMAND", file=sys.stderr)
+        return 2
+    try:
+        report = rc.run_telemetry_export(Path(args.export)) if args.export else rc.run_telemetry_emitter(args.emitter)
+    except (OSError, ValueError) as exc:
+        print(f"agentsmith: {exc}", file=sys.stderr)
+        return 2
+    print(report.render())
+    return 0 if report.passed else 1
+
+
 def _record_conformance(args: argparse.Namespace) -> int:
     """`agentsmith conformance --port record --sender CMD | --receiver URL`
     (contract/record/v1/protocol.md)."""
@@ -1131,6 +1148,8 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
         return _record_conformance(args)
     if args.port == "rules":
         return _rules_conformance(args)
+    if args.port == "telemetry":
+        return _telemetry_conformance(args)
     if not args.provider:
         print("agentsmith conformance: --provider is required for the gate contract", file=sys.stderr)
         return 2
@@ -1448,9 +1467,13 @@ def build_parser() -> argparse.ArgumentParser:
     rules.set_defaults(func=_cmd_rules)
 
     conformance = sub.add_parser("conformance", help="does a command or a portal satisfy a contract?")
-    conformance.add_argument("--port", choices=("gate", "record", "rules"), default="gate",
-                             help="the contract: the gate or the rules (a provider command), or the record "
-                                  "(a sender or a receiver)")
+    conformance.add_argument("--port", choices=("gate", "record", "rules", "telemetry"), default="gate",
+                             help="the contract: the gate or the rules (a provider command), the record "
+                                  "(a sender or a receiver), or telemetry (an emitter or an export)")
+    conformance.add_argument("--export", metavar="FILE",
+                             help="telemetry: an OTLP/JSON export to judge — one object, or one per line")
+    conformance.add_argument("--emitter", metavar="COMMAND",
+                             help="telemetry: a command to run with its OTLP export pointed at a loopback receiver")
     conformance.add_argument("--provider", metavar="COMMAND",
                              help='the provider to test, e.g. "agentsmith gate" or "agentsmith rules"')
     conformance.add_argument("--sender", metavar="COMMAND",

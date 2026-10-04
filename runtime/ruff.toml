@@ -47,6 +47,7 @@ extend-exclude = [
   "self_correction.py",
   "structured_output.py",
   "sync.py",
+  "telemetry_contract.py",
   "temporal_client.py",
   "temporal_replay.py",
   "tenancy.py",

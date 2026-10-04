@@ -1131,6 +1131,73 @@ CATALOGUE: tuple[Suite, ...] = (
     # .agent-rfc/designs/record-contract.md — the record a gate provider sends a
     # portal: one model, both sides held to it, and conformance that can fail.
     Suite(
+        name="telemetry_contract",
+        tests=("scripts/test/test_telemetry_contract.py",),
+        mutations=(
+            Mutation(
+                "an emitter that exported nothing is judged conformant",
+                "runtime/telemetry_contract.py",
+                '    checks.append(Check("something was exported", bool(spans or metrics),',
+                '    checks.append(Check("something was exported", True,',
+            ),
+            Mutation(
+                "spans inside a run are never asked for their identity",
+                "runtime/telemetry_contract.py",
+                "    unidentified = [f\"{s.name} lacks {e.name}\" for s in spans if s.span_id in inside",
+                "    unidentified = [f\"{s.name} lacks {e.name}\" for s in spans if False",
+            ),
+            Mutation(
+                "a span is inside a run only if it carries run.id itself — children escape",
+                "runtime/telemetry_contract.py",
+                "            node = by_id.get(node.parent_id)",
+                "            node = None",
+            ),
+            Mutation(
+                "conditional attributes are never checked",
+                "runtime/telemetry_contract.py",
+                "            holds, present = _holds(entry.when, span.attributes), entry.name in span.attributes",
+                "            holds = present = True",
+            ),
+            Mutation(
+                "a catalogued attribute of the wrong type passes",
+                "runtime/telemetry_contract.py",
+                "                if not _typed(known.type, kind):",
+                "                if False:",
+            ),
+            Mutation(
+                "any name under any family counts as catalogued",
+                "runtime/telemetry_contract.py",
+                "        families = [e for e in self.entries if e.where == where and e.family "
+                "and name.startswith(e.name)]",
+                "        families = [e for e in self.entries if e.where == where and e.family]",
+            ),
+            Mutation(
+                "the receiver reads a body of any size",
+                "runtime/telemetry_contract.py",
+                "                if signal is None or length <= 0 or length > MAX_BODY_BYTES:",
+                "                if signal is None or length <= 0:",
+            ),
+            Mutation(
+                "the CI setup shim answers with a vendored tenant's own CLI",
+                ".github/actions/setup-agentsmith/action.yml",
+                'exec "%s" -P -m runtime.cli',
+                'exec "%s" -m runtime.cli',
+            ),
+            Mutation(
+                "the weekly sync runs a vendored tenant's own sync",
+                "workflow-templates/agentsmith-sync.yml",
+                "run: python3 -P -m runtime.cli sync --yes",
+                "run: python3 -m runtime.cli sync --yes",
+            ),
+            Mutation(
+                "the runtime library stops naming the contract it speaks",
+                "runtime/tracing.py",
+                '        "governance.telemetry.contract": 1,\n',
+                "",
+            ),
+        ),
+    ),
+    Suite(
         name="rules_contract",
         tests=("scripts/test/test_rules_contract.py",),
         mutations=(

@@ -24,8 +24,10 @@ runs:
         bin="${RUNNER_TEMP}/agentsmith-provider/bin"
         mkdir -p "$bin"
         # The CLI run from this release's own source, on PATH as `agentsmith`:
-        # what the declaration's `agentsmith gate` command resolves to.
-        printf '#!/usr/bin/env bash\nPYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}" exec "%s" -m runtime.cli "$@"\n' \
+        # what the declaration's `agentsmith gate` command resolves to. `-P`:
+        # `python -m` otherwise puts the working directory first on the path,
+        # and in a vendored tenant that is the tenant's own, older `runtime/`.
+        printf '#!/usr/bin/env bash\nPYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}" exec "%s" -P -m runtime.cli "$@"\n' \
           "$root" "$(command -v python)" > "$bin/agentsmith"
         chmod +x "$bin/agentsmith"
         echo "$bin" >> "$GITHUB_PATH"

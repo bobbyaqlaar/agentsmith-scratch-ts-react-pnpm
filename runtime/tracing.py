@@ -309,6 +309,11 @@ def resource_attributes(project_name: Optional[str] = None) -> dict:
         # Without this attribute that is indistinguishable, on an ops
         # dashboard, from a current tenant that is broken.
         "agentsmith.framework.version": framework_version(),
+        # WHICH CONTRACT these spans speak (contract/telemetry/v1). The version
+        # above is meaningful only to an emitter that is this library; a tenant
+        # on plain OpenTelemetry states the contract instead, and a reader keys
+        # on that. `runtime/telemetry_contract.py` holds the same number.
+        "governance.telemetry.contract": 1,
     }
     # `tenant.owner` is declared in tenant.yaml and was read by nothing, while
     # this attribute came from a shell profile — so on a dev machine every repo

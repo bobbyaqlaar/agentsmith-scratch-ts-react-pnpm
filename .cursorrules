@@ -26,7 +26,7 @@
 - TypeScript/React: no `any` type; enforce `use client` on client components. Python/FastAPI: Pydantic V2 for all models; async-safe, no blocking calls. Go: always check `if err != nil`; table-driven tests; -race flag.
 
 ## 8. OBSERVABILITY WIRE
-- .cursorrules and CLAUDE.md include explicit OTLP endpoint instructions. Without OTEL_EXPORTER_OTLP_ENDPOINT, runtime/otlp.py uses the endpoint `agentsmith dashboard start` records.
+- Telemetry is OTLP with the attributes and instruments contract/telemetry/v1 catalogues, and `governance.telemetry.contract` on the Resource. The endpoint comes from the standard OTEL_EXPORTER_OTLP_* variables, never from a path into a provider's install; AgentSmith's runtime library reads them through runtime/otlp.py, and plain OpenTelemetry reads them too. `agentsmith conformance --port telemetry` judges what an emitter exports.
 
 ## 9. MULTI-AGENT ORCHESTRATION
 - Dev sessions may use LangGraph MemorySaver. Production workers must use Temporal or Celery — MemorySaver is prohibited.

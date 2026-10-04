@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -133,17 +134,14 @@ def plan_sync(root: Path, *, tenant_id: Optional[str] = None, framework: Optiona
 
     # The files the tenant shares with the framework. `ownership` decides: a
     # file they have edited is named and left, never clobbered.
-    for rel, text in _shared_files(plan).items():
+    shared, regions = _shared_files(plan)
+    for rel, text in shared.items():
         state = ownership(root, rel)
         here = root / rel
-        if rel in _MERGED and here.is_file():
-            if here.read_text(encoding="utf-8") != text:  # `text` already keeps their keys
-                plan.stale.append(rel)
-            continue
-        if rel in _RULE_FILES and here.is_file() and not _generated_whole(here):
-            # Their file, our block: the block is refreshed, the rest is theirs,
-            # so the file's own hash is not the question.
-            if here.read_text(encoding="utf-8") != _with_block(here, text):
+        if (rel in _MERGED or rel in regions) and here.is_file():
+            # Their file, our region: `text` already keeps everything that is
+            # theirs, so the file's own hash is not the question.
+            if here.read_text(encoding="utf-8") != text:
                 plan.stale.append(rel)
             continue
         if state == "edited":
@@ -158,40 +156,69 @@ def plan_sync(root: Path, *, tenant_id: Optional[str] = None, framework: Optiona
     return plan
 
 
-_RULE_FILES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursorrules", ".github/copilot-instructions.md")
 # Files where the framework owns a REGION and the tenant owns the rest, so the
-# file's own hash is not the question: the rule files' marked block, and Claude's
-# settings, where `render_config` replaces the hooks and keeps permissions and
-# everything else. Judging these by the whole file would freeze a tenant's gate
-# wiring the moment they edited their own permissions
-# (.agent-rfc/designs/sync-merged-files.md). Cursor's config is not here: the
-# framework renders it whole, so a tenant who rewrote it owns it.
+# file's own hash is not the question: Claude's settings, where `render_config`
+# replaces the hooks and keeps permissions and everything else. Judging it by the
+# whole file would freeze a tenant's gate wiring the moment they edited their own
+# permissions (.agent-rfc/designs/sync-merged-files.md). The rule files a
+# provider renders as a `block` are judged the same way, per file, by
+# `_shared_files`. Cursor's config is not here: the framework renders it whole,
+# so a tenant who rewrote it owns it.
 _MERGED = (".claude/settings.json",)
 
-
-def _generated_whole(path: Path) -> bool:
-    from runtime.adopt import generated_by_agentsmith
-
-    return generated_by_agentsmith(path.read_text(encoding="utf-8"))
-
-
-def _with_block(path: Path, generated: str) -> str:
-    from runtime.adopt import merge_rules_block
-
-    return merge_rules_block(path.read_text(encoding="utf-8"), generated)
+CONFIG = ".agenticframework/process-gates.json"
+# What `tenant adopt` used to write for each document: this install's layout, in
+# the tenant's declaration. Exactly these values become `"provider"`; any other
+# value is the tenant's choice (.agent-rfc/designs/rules-contract.md).
+LEGACY_DOCUMENTS = {"registry": "@framework/templates/governance.json",
+                    "levers_doc": "@framework/docs/review-levers.md",
+                    "design_checklist": "@framework/docs/design-review-checklist.md"}
 
 
-def _shared_files(plan: Plan) -> dict[str, str]:
+def provider_documents(text: str) -> str:
+    """`process-gates.json` with each legacy `@framework/` document named
+    `"provider"` instead — edited in place, so the rest of the file is byte for
+    byte what the tenant committed."""
+    for key, legacy in LEGACY_DOCUMENTS.items():
+        text = re.sub(rf'("{key}"\s*:\s*)"{re.escape(legacy)}"', r'\1"provider"', text)
+    return text
+
+
+def _shared_files(plan: Plan) -> tuple[dict[str, str], set[str]]:
     """What the framework would write today for the files a tenant also edits:
-    the IDE hook configs, the rule files, and the gates workflow."""
+    the IDE hook configs, the rule files, the gates workflow and the gate config —
+    and which of them it owns only a region of."""
     import json as _json
     import sys as _sys
 
-    from runtime.adopt import GATES_WORKFLOW, PROVIDERS, SYNC_WORKFLOW, generated_rules, providers_declaration, \
-        workflow_setup
+    from runtime.adopt import GATES_WORKFLOW, PROVIDERS, SYNC_WORKFLOW, RulesUnavailable, providers_declaration, \
+        rendered_rules, rules_port, workflow_setup
 
     root, framework = plan.root, plan.framework
-    shared: dict[str, str] = dict(generated_rules(root, framework, plan.stack))
+    shared: dict[str, str] = {}
+    regions: set[str] = set()
+    # The rule files, as the declared rules provider renders them and placed by
+    # the contract's rules: a `block` keeps everything outside it (contract/rules/v1).
+    try:
+        port = rules_port(framework)
+        for file in rendered_rules(root, framework).files:
+            here = root / file.path
+            existing = here.read_text(encoding="utf-8") if here.is_file() else None
+            shared[file.path] = port.place(existing, file)
+            if file.placement == "block":
+                regions.add(file.path)
+    except RulesUnavailable as exc:
+        plan.notes.append(f"rule files not refreshed — nothing of them is written: {exc}")
+
+    config = root / CONFIG
+    if config.is_file():
+        before = config.read_text(encoding="utf-8")
+        after = provider_documents(before)
+        if after != before:
+            shared[CONFIG] = after
+            regions.add(CONFIG)
+            plan.notes.append(f"{CONFIG}: documents named by this install's paths now name `\"provider\"` — "
+                              "the gate provider's own, wherever it is installed")
 
     _sys.path.insert(0, str(framework / "scripts"))
     try:
@@ -221,7 +248,7 @@ def _shared_files(plan: Plan) -> dict[str, str]:
     # it, and `ownership` leaves it alone and says so.
     if (root / PROVIDERS).is_file():
         shared[PROVIDERS] = providers_declaration(setup=workflow_setup(root, f"v{plan.version}"))
-    return shared
+    return shared, regions
 
 
 def _workflow_template(framework: Path, name: str) -> Optional[Path]:
@@ -251,17 +278,14 @@ def sync(plan: Plan) -> list[str]:
     # The hooks, from the one implementation `init` and `adopt` use. `force`,
     # because refreshing a stale copy is the point.
     install_gate_hooks(root, plan.framework, force=True, provisioning=False)
-    shared = _shared_files(plan)
+    shared, _regions = _shared_files(plan)
     for rel in plan.stale:
         text = shared.get(rel)
         if text is None:
             continue  # a hook: `install_gate_hooks` has just rewritten it
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        if rel in _RULE_FILES and target.is_file() and not _generated_whole(target):
-            target.write_text(_with_block(target, text), encoding="utf-8")
-        else:
-            target.write_text(text, encoding="utf-8")
+        target.write_text(text, encoding="utf-8")
     written += plan.stale + plan.added
     if not (root / PROVIDERS).exists():
         (root / PROVIDERS).write_text(providers_declaration(), encoding="utf-8")

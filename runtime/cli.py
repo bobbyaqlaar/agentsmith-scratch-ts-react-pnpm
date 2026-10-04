@@ -582,12 +582,16 @@ def _process_gates_config(stack: str, session_start: Optional[str] = None,
                   "This file is gated itself, so switching a gate off takes a design and a review.",
         "gated": gated or [*GATED_BY_STACK.get(stack, GATED_BY_STACK["python-fastapi"]), *ALWAYS_GATED],
         "not_gated": ["**.md", ".agent-rfc/**", "**/node_modules/**"],
-        "registry": "@framework/templates/governance.json",
+        # The gate provider's own documents, named without naming where it is
+        # installed: a provider's layout has no place in a tenant's declaration.
+        # Declared, not omitted — an absent `registry` means a config that
+        # predates the pillar requirements (.agent-rfc/designs/rules-contract.md).
+        "registry": "provider",
         "artifacts": "off",
         "pillars": "off",
         "knowledge_graph": "off",
-        "levers_doc": "@framework/docs/review-levers.md",
-        "design_checklist": "@framework/docs/design-review-checklist.md",
+        "levers_doc": "provider",
+        "design_checklist": "provider",
     }
     if session_start:
         # The structural style and its first rule, in every agent session's context.
@@ -1045,6 +1049,47 @@ def _gate_kg(scripts: Path, verb: Optional[str], base: Optional[str]) -> int:
     return 2
 
 
+def _cmd_rules(args: argparse.Namespace) -> int:
+    """`agentsmith rules render [--write] | check` — AgentSmith as a rules
+    provider (contract/rules/v1/protocol.md), answered by this installation's
+    own scripts, never a tenant's vendored copy — as `gate` is."""
+    import subprocess as sp
+
+    scripts = _provider_scripts()
+    if scripts is None or not (scripts / "rules_port.py").is_file():
+        print("agentsmith rules: no rules_port.py in $AGENTSMITH_DIR or ~/.agent-framework — "
+              "run install-ai-stack.sh", file=sys.stderr)
+        return 3
+    if args.write and args.verb != "render":
+        print("agentsmith rules: --write goes with render", file=sys.stderr)
+        return 2
+    done = sp.run([sys.executable, str(scripts / "rules_port.py"), args.verb, *(["--write"] if args.write else [])],
+                  input=sys.stdin.read() if not sys.stdin.isatty() else "{}", capture_output=True, text=True,
+                  check=False)
+    sys.stderr.write(done.stderr)
+    sys.stdout.write(done.stdout)
+    return done.returncode
+
+
+def _rules_conformance(args: argparse.Namespace) -> int:
+    """`agentsmith conformance --port rules --provider CMD` (contract/rules/v1/protocol.md)."""
+    import tempfile
+
+    from runtime import conformance as rc
+
+    if not args.provider:
+        print("agentsmith conformance --port rules: --provider COMMAND is required", file=sys.stderr)
+        return 2
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            report = rc.run_rules(args.provider, Path(tmp) / "fixture")
+        except FileNotFoundError as exc:
+            print(f"agentsmith: {exc}", file=sys.stderr)
+            return 2
+    print(report.render())
+    return 0 if report.passed else 1
+
+
 def _record_conformance(args: argparse.Namespace) -> int:
     """`agentsmith conformance --port record --sender CMD | --receiver URL`
     (contract/record/v1/protocol.md)."""
@@ -1084,6 +1129,8 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
 
     if args.port == "record":
         return _record_conformance(args)
+    if args.port == "rules":
+        return _rules_conformance(args)
     if not args.provider:
         print("agentsmith conformance: --provider is required for the gate contract", file=sys.stderr)
         return 2
@@ -1394,11 +1441,18 @@ def build_parser() -> argparse.ArgumentParser:
                       help="the dialect the payload is in (default: the contract's neutral profile)")
     gate.set_defaults(func=_cmd_gate)
 
+    rules = sub.add_parser("rules", help="render or check the rule files agents read (contract/rules/v1)")
+    rules.add_argument("verb", choices=("render", "check"))
+    rules.add_argument("--write", action="store_true",
+                       help="render: place the files here instead of printing them (not a contract verb)")
+    rules.set_defaults(func=_cmd_rules)
+
     conformance = sub.add_parser("conformance", help="does a command or a portal satisfy a contract?")
-    conformance.add_argument("--port", choices=("gate", "record"), default="gate",
-                             help="the contract: the gate (a provider command) or the record (a sender or a receiver)")
+    conformance.add_argument("--port", choices=("gate", "record", "rules"), default="gate",
+                             help="the contract: the gate or the rules (a provider command), or the record "
+                                  "(a sender or a receiver)")
     conformance.add_argument("--provider", metavar="COMMAND",
-                             help='the gate provider to test, e.g. "agentsmith gate"')
+                             help='the provider to test, e.g. "agentsmith gate" or "agentsmith rules"')
     conformance.add_argument("--sender", metavar="COMMAND",
                              help="record: a gate provider that sends records, run against a loopback receiver")
     conformance.add_argument("--receiver", metavar="URL",

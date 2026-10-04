@@ -10,3 +10,6 @@
 pydantic>=2.0,<3.0
 opentelemetry-sdk>=1.20,<2.0
 opentelemetry-exporter-otlp-proto-http>=1.20,<2.0
+# The rules port (scripts/rules_port.py) reads the provider's catalogue,
+# templates/agent-rules.yaml — so the provider's CI setup needs a YAML reader.
+pyyaml>=6.0,<7.0

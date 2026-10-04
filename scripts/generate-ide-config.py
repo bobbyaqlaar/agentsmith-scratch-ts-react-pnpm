@@ -25,8 +25,6 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -566,37 +564,84 @@ def _render_skill(skill: dict, rules: dict, ctx: dict[str, str]) -> str:
 
 
 def _detect_stack(repo_root: Path) -> tuple[str, str]:
-    """Mirror hooks/post-checkout's bash stack detection. Returns (stack, default_test_cmd)."""
+    """(stack, default test command) from what the repository holds — the order
+    `tenant adopt` and hooks/post-checkout use, and the lock file the tests run
+    under (a uv project runs `uv run pytest`, a pnpm one `pnpm test`)."""
     if (repo_root / "package.json").exists():
+        if (repo_root / "pnpm-lock.yaml").exists():
+            return "ts-react", "CI=true pnpm test"
         return "ts-react", "CI=true npm test"
-    if (
-        (repo_root / "requirements.txt").exists()
-        or (repo_root / "pyproject.toml").exists()
-        or (repo_root / "Pipfile").exists()
-    ):
-        return "python-fastapi", "pytest"
+    if any((repo_root / name).exists() for name in ("pyproject.toml", "Pipfile", "setup.py")) \
+            or list(repo_root.glob("requirements*.txt")):
+        return "python-fastapi", "uv run pytest" if (repo_root / "uv.lock").exists() else "pytest"
     if (repo_root / "go.mod").exists():
         return "go", "go test -race ./..."
     return "generic", "echo 'No test command configured'"
 
 
-def _default_project_name(repo_root: Path) -> str:
-    try:
-        url = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        ).stdout.strip()
-        if url:
-            return url.rsplit("/", 1)[-1].removesuffix(".git")
-    # fail-open: no git remote / not a git repo / git not installed all fall back to the
-    # dir name below
-    except Exception:
-        pass
-    return repo_root.resolve().name
+DEFAULT_OTEL_ENDPOINT = "http://localhost:6006"
+
+
+def declared_context(repo_root: Path) -> dict:
+    """What the rule files say about THIS repository, from what it commits.
+
+    contract/rules/v1: a render reads the repository's declarations and content
+    and nothing else — not the environment, not the git remote — so CI and the
+    developer who committed the files render the same bytes. It used to read
+    AGENT_OWNER_ID, AGENT_PHOENIX_ENDPOINT and FRAMEWORK_VERSION, and a runner
+    with one of them set reported drift nobody had made.
+    """
+    extends = _repo_extends(repo_root)
+    declared = _tenant_declaration(repo_root)
+    detected_stack, detected_test_cmd = _detect_stack(repo_root)
+    return {
+        "stack": detected_stack,
+        "rules_extra": extends.get("rules_extra") or [],
+        "project_name": declared.get("tenant.name") or declared.get("tenant.id") or "unnamed",
+        "owner_id": declared.get("tenant.owner") or "unknown@unknown",
+        "otel_endpoint": extends.get("otel_endpoint") or DEFAULT_OTEL_ENDPOINT,
+        "test_cmd": extends.get("test_command") or detected_test_cmd,
+        "framework_version": declared.get("framework.version") or "1.0.0",
+    }
+
+
+HISTORY_SEED = (
+    "# .agent-history.log — append-only record of agent sessions.\n"
+    "# Read at session start (pillar 5): unresolved MAJOR/CRITICAL entries\n"
+    "# are things a previous session could not finish, and repeating them\n"
+    "# is the failure this log exists to prevent.\n"
+    "# Written by scripts/agent_logger.py; safe to read, do not rewrite.\n"
+)
+
+
+def seed_history(repo_root: Path) -> bool:
+    """Create .agent-history.log if it is missing. Pillar 5 tells every agent to
+    read it on session start; a fresh repo had none, so the rule pointed at
+    nothing — and a missing file reads as "no history" rather than "not wired
+    up yet". Tenant data, not a rule file: never overwritten, never rendered."""
+    path = repo_root / ".agent-history.log"
+    if path.exists():
+        return False
+    path.write_text(HISTORY_SEED)
+    return True
+
+
+def render_files(repo_root: Path, rules: dict, ctx: dict) -> list[tuple[str, str, str]]:
+    """Every rule file, as `(path, text, kind)`: the five instruction files an
+    IDE reads at session start, then the skill files. One list for the default
+    mode, --check-only and the rules port (scripts/rules_port.py), so there is
+    one renderer."""
+    stack = ctx["stack"]
+    files = [
+        (".cursorrules", _render_cursorrules(rules, stack, ctx), "instructions"),
+        ("CLAUDE.md", _render_claude_md(rules, ctx), "instructions"),
+        ("AGENTS.md", _render_agents_md(rules, stack, ctx), "instructions"),
+        ("GEMINI.md", _render_gemini_md(rules, stack, ctx), "instructions"),
+        (".github/copilot-instructions.md", _render_copilot_instructions(rules, stack, ctx), "instructions"),
+    ]
+    files += [(f".agents/skills/{skill['id']}/skill.md", _render_skill(skill, rules, ctx), "supporting")
+              for skill in rules.get("skills", [])]
+    return files
 
 
 def main() -> None:
@@ -643,7 +688,6 @@ def main() -> None:
     args = ap.parse_args()
 
     repo_root = Path(args.repo_root)
-    detected_stack, detected_test_cmd = _detect_stack(repo_root)
 
     rules_file = (
         Path(args.rules_file)
@@ -660,7 +704,6 @@ def main() -> None:
         )
         sys.exit(1)
 
-    stack = args.stack or detected_stack
     rules = _load_rules(rules_file)
     if args.hooks:
         sys.exit(_hooks_mode(Path(args.repo_root).resolve(), args.check_only))
@@ -668,76 +711,29 @@ def main() -> None:
         sys.exit(_gates_mode(Path(args.repo_root).resolve(), args.check_only))
     if args.registry:
         sys.exit(_registry_mode(rules_file, rules, args.check_only))
-    extends = _repo_extends(repo_root)
-    declared = _tenant_declaration(repo_root)
-    ctx = {
-        "rules_extra": extends.get("rules_extra") or [],
-        "project_name": args.project_name or declared.get("tenant.name") or _default_project_name(repo_root),
-        "owner_id": args.owner_id
-        or os.environ.get("AGENT_OWNER_ID")
-        or declared.get("tenant.owner")
-        or "unknown@unknown",
-        "otel_endpoint": args.otel_endpoint
-        or os.environ.get("AGENT_PHOENIX_ENDPOINT", "http://localhost:6006"),
-        "test_cmd": args.test_cmd or extends.get("test_command") or detected_test_cmd,
-        "framework_version": args.framework_version
-        or os.environ.get("FRAMEWORK_VERSION")
-        or declared.get("framework.version")
-        or "1.0.0",
-    }
+    # What the repository declares, overridden only by what the caller passed
+    # explicitly (hooks/post-checkout provisions a fresh clone that way).
+    ctx = declared_context(repo_root)
+    for key, value in (("stack", args.stack), ("project_name", args.project_name), ("owner_id", args.owner_id),
+                       ("otel_endpoint", args.otel_endpoint), ("test_cmd", args.test_cmd),
+                       ("framework_version", args.framework_version)):
+        if value:
+            ctx[key] = value
+    stack = ctx["stack"]
 
     if args.check_only:
-        sys.exit(0 if _check_drift(repo_root, rules, stack, ctx) else 1)
+        sys.exit(0 if _check_drift(repo_root, rules, ctx) else 1)
 
-    cursorrules_path = repo_root / ".cursorrules"
-    if args.write or not cursorrules_path.exists():
-        cursorrules_path.write_text(_render_cursorrules(rules, stack, ctx))
-        print(
-            f"✅ Written .cursorrules ({len(rules.get('pillars', []))} pillars "
-            f"+ {stack} addendum) from agent-rules.yaml"
-        )
+    for rel, text, kind in render_files(repo_root, rules, ctx):
+        target = repo_root / rel
+        if args.write or not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+            if kind == "instructions":
+                print(f"✅ Written {rel} ({stack}) from agent-rules.yaml")
 
-    claude_md_path = repo_root / "CLAUDE.md"
-    if args.write or not claude_md_path.exists():
-        claude_md_path.write_text(_render_claude_md(rules, ctx))
-        print("✅ Written CLAUDE.md from agent-rules.yaml")
-
-    agents_md_path = repo_root / "AGENTS.md"
-    if args.write or not agents_md_path.exists():
-        agents_md_path.write_text(_render_agents_md(rules, stack, ctx))
-        print("✅ Written AGENTS.md (Codex / cross-tool) from agent-rules.yaml")
-
-    gemini_md_path = repo_root / "GEMINI.md"
-    if args.write or not gemini_md_path.exists():
-        gemini_md_path.write_text(_render_gemini_md(rules, stack, ctx))
-        print("✅ Written GEMINI.md (Gemini CLI) from agent-rules.yaml")
-
-    copilot_path = repo_root / ".github" / "copilot-instructions.md"
-    if args.write or not copilot_path.exists():
-        copilot_path.parent.mkdir(parents=True, exist_ok=True)
-        copilot_path.write_text(_render_copilot_instructions(rules, stack, ctx))
-        print("✅ Written .github/copilot-instructions.md from agent-rules.yaml")
-
-    # Pillar 5 tells every agent to read this on session start. A fresh repo had
-    # none, so the rule pointed at nothing — and a missing file reads as "no
-    # history" rather than "not wired up yet".
-    history_path = repo_root / ".agent-history.log"
-    if not history_path.exists():
-        history_path.write_text(
-            "# .agent-history.log — append-only record of agent sessions.\n"
-            "# Read at session start (pillar 5): unresolved MAJOR/CRITICAL entries\n"
-            "# are things a previous session could not finish, and repeating them\n"
-            "# is the failure this log exists to prevent.\n"
-            "# Written by scripts/agent_logger.py; safe to read, do not rewrite.\n"
-        )
+    if seed_history(repo_root):
         print("✅ Seeded .agent-history.log")
-
-    for skill in rules.get("skills", []):
-        skill_dir = repo_root / ".agents" / "skills" / skill["id"]
-        skill_path = skill_dir / "skill.md"
-        if args.write or not skill_path.exists():
-            skill_dir.mkdir(parents=True, exist_ok=True)
-            skill_path.write_text(_render_skill(skill, rules, ctx))
 
     if rules.get("skills"):
         print(
@@ -745,45 +741,27 @@ def main() -> None:
         )
 
 
-def _check_drift(repo_root: Path, rules: dict, stack: str, ctx: dict[str, str]) -> bool:
+def _check_drift(repo_root: Path, rules: dict, ctx: dict) -> bool:
     """Print a diff for any committed IDE config file that no longer matches
     what agent-rules.yaml would generate. Returns True if clean (no drift)."""
     clean = True
-
-    checks = [
-        (repo_root / ".cursorrules", _render_cursorrules(rules, stack, ctx)),
-        (repo_root / "CLAUDE.md", _render_claude_md(rules, ctx)),
-        (repo_root / "AGENTS.md", _render_agents_md(rules, stack, ctx)),
-        (repo_root / "GEMINI.md", _render_gemini_md(rules, stack, ctx)),
-        (
-            repo_root / ".github" / "copilot-instructions.md",
-            _render_copilot_instructions(rules, stack, ctx),
-        ),
-    ]
-    for skill in rules.get("skills", []):
-        skill_path = repo_root / ".agents" / "skills" / skill["id"] / "skill.md"
-        checks.append((skill_path, _render_skill(skill, rules, ctx)))
-
-    for path, expected in checks:
+    for rel, expected, _kind in render_files(repo_root, rules, ctx):
+        path = repo_root / rel
         if not path.exists():
-            print(
-                f"ℹ️  {path.relative_to(repo_root)} not generated yet — skipping drift check."
-            )
+            print(f"ℹ️  {rel} not generated yet — skipping drift check.")
             continue
         actual = path.read_text()
         if actual == expected:
-            print(f"✅ {path.relative_to(repo_root)} matches agent-rules.yaml")
+            print(f"✅ {rel} matches agent-rules.yaml")
             continue
         clean = False
-        print(f"❌ {path.relative_to(repo_root)} has drifted from agent-rules.yaml:")
-        diff = difflib.unified_diff(
+        print(f"❌ {rel} has drifted from agent-rules.yaml:")
+        sys.stdout.writelines(difflib.unified_diff(
             actual.splitlines(keepends=True),
             expected.splitlines(keepends=True),
             fromfile=f"committed/{path.name}",
             tofile=f"generated/{path.name}",
-        )
-        sys.stdout.writelines(diff)
-
+        ))
     return clean
 
 

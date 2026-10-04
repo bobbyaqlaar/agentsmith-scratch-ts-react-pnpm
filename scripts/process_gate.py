@@ -83,6 +83,13 @@ ALWAYS_GOVERNED = (CONFIG, PROVIDERS_FILE)
 DESIGNS_DIR = ".agent-rfc/designs"
 REVIEWS_DIR = ".agent-rfc/reviews"
 FRAMEWORK_PREFIX = "@framework/"
+# `"provider"` as a document's value: the gate provider's own copy of it, named
+# without naming where the provider is installed — what a tenant declares, now
+# that a provider's layout has no place in its config. `@framework/<path>` is
+# the older spelling of the same thing (.agent-rfc/designs/rules-contract.md).
+PROVIDER_VALUE = "provider"
+PROVIDER_DOCUMENTS = {"registry": "templates/governance.json", "levers_doc": "docs/review-levers.md",
+                      "design_checklist": "docs/design-review-checklist.md"}
 # The directory this script was installed from: an AgentSmith checkout, or
 # ~/.agent-framework. `@framework/<path>` in a config resolves against it first
 # (`framework_file`).
@@ -141,21 +148,28 @@ def _any(path: str, patterns) -> bool:
 # ── Configuration ────────────────────────────────────────────────────────────
 
 
+def _document(data: dict, key: str, default: str) -> str:
+    """A document the config names: a repository path, `@framework/<path>`, or
+    `"provider"` — read as the `@framework/` path it stands for."""
+    value = data.get(key) or default
+    return f"{FRAMEWORK_PREFIX}{PROVIDER_DOCUMENTS[key]}" if value == PROVIDER_VALUE else value
+
+
 class Config:
     """A repo's declaration of what the gates cover (`CONFIG`)."""
 
     def __init__(self, data: dict) -> None:
         self.gated: List[str] = list(data.get("gated") or [])
         self.not_gated: List[str] = list(data.get("not_gated") or [])
-        self.levers_doc: str = data.get("levers_doc") or "docs/review-levers.md"
-        self.design_checklist: str = data.get("design_checklist") or "docs/design-review-checklist.md"
+        self.levers_doc: str = _document(data, "levers_doc", "docs/review-levers.md")
+        self.design_checklist: str = _document(data, "design_checklist", "docs/design-review-checklist.md")
         changelog = data.get("changelog") or {}
         self.changelog_file: Optional[str] = changelog.get("file")
         self.changelog_paths: List[str] = list(changelog.get("paths") or [])
         self.changelog_except: List[str] = list(changelog.get("except") or [])
         # The rules registry: the framework's by default — beside the running
         # script, which in a vendored tenant is the tenant's own synced copy.
-        self.registry: str = data.get("registry") or f"{FRAMEWORK_PREFIX}templates/governance.json"
+        self.registry: str = _document(data, "registry", f"{FRAMEWORK_PREFIX}templates/governance.json")
         # Declaring `registry` is how a repo ADOPTS the registry's design-time
         # requirements — pillars, deviations, dependencies, the sign-off block.
         # A commit whose own config does not declare one predates them, and no
@@ -212,7 +226,7 @@ class Config:
         text = self.doc_text(self.registry, read)
         if text is None:
             return None, [f"the rules registry {self.display(self.registry)} does not exist — "
-                          "run scripts/generate-ide-config.py --registry, or re-sync AgentSmith"]
+                          "reinstall the gate provider (for AgentSmith: install-ai-stack.sh), or re-sync"]
         try:
             registry = gm.Registry.model_validate_json(text)
             extends = gm.Extends.model_validate(self.extends_data) if self.extends_data is not None else None
@@ -241,7 +255,7 @@ class Config:
 
     def display(self, value: str) -> str:
         if value.startswith(FRAMEWORK_PREFIX):
-            return f"{value[len(FRAMEWORK_PREFIX):]} in your AgentSmith checkout or ~/.agent-framework"
+            return f"the gate provider's {value[len(FRAMEWORK_PREFIX):]} (an AgentSmith checkout or ~/.agent-framework)"
         return value
 
 

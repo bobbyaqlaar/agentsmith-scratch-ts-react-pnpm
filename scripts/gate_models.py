@@ -21,7 +21,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 __all__ = [
     "RECORD_LIMITS",
@@ -47,6 +47,12 @@ __all__ = [
     "RecordCommit",
     "Records",
     "Registry",
+    "RulesCheck",
+    "RulesFile",
+    "RulesFileState",
+    "RulesPort",
+    "RulesRender",
+    "RulesRequest",
     "Signoff",
     "ValidationError",
     "check_approvals",
@@ -311,6 +317,89 @@ class DevRecord(_Record):
     ci_run_url: Annotated[str, Field(pattern=r"^https?://")] | None = None
 
 
+# ── The rules a provider renders for a tenant's agents (contract/rules/v1/) ─
+#
+# `render` names each file, its text, how it is placed and what it is; `check`
+# says whether the repository still holds what `render` would place. The path
+# rule is the contract's own: a rules provider writes what agents read, never a
+# repository's hooks, declarations or CI — and the CALLER enforces it, on every
+# path, before writing any (.agent-rfc/designs/rules-contract.md).
+
+RULES_PLACEMENTS = ("whole", "block")
+RULES_KINDS = ("instructions", "supporting")
+RULES_STATES = ("current", "drifted", "absent")
+RULES_FORBIDDEN = (".git", ".githooks", ".agenticframework", ".github/workflows", ".github/actions")
+RULES_LIMITS = {"files": 200, "text": 1_000_000}
+
+
+def _any_case(text: str) -> str:
+    """`text` as a pattern blind to letter case, in a form JSON Schema readers
+    share — a case-insensitive filesystem opens `.GIT/hooks` as `.git/hooks`."""
+    return "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else re.escape(c) for c in text)
+
+
+# Relative, normalised (no empty, `.` or `..` segment, no backslash or control
+# character), and
+# not inside a forbidden directory, whatever its case.
+RULES_PATH = (
+    r"^(?!/)(?!.*//)(?!.*/$)(?!(?:.*/)?\.\.?(?:/|$))"
+    + "(?!(?:" + "|".join(_any_case(d) for d in RULES_FORBIDDEN) + r")(?:/|$))"
+    + r"[^\\\x00-\x1f]+$"
+)
+
+
+class RulesRequest(BaseModel):
+    """What a caller sends on stdin. Unknown keys are ignored, so a caller that
+    adds one breaks no provider."""
+
+    model_config = ConfigDict(extra="allow")
+
+    cwd: str | None = None
+
+
+class RulesFile(_Frozen):
+    model_config = ConfigDict(frozen=True, extra="forbid", regex_engine="python-re")
+
+    path: str = Field(pattern=RULES_PATH, max_length=512)
+    text: str = Field(max_length=RULES_LIMITS["text"])
+    placement: Literal["whole", "block"]
+    kind: Literal["instructions", "supporting"]
+
+
+class RulesRender(_Frozen):
+    files: list[RulesFile] = Field(max_length=RULES_LIMITS["files"])
+
+    @model_validator(mode="after")
+    def _one_entry_per_path(self) -> "RulesRender":
+        seen: set[str] = set()
+        for entry in self.files:
+            if entry.path.lower() in seen:
+                raise ValueError(f"{entry.path} is rendered twice")
+            seen.add(entry.path.lower())
+        return self
+
+
+class RulesFileState(_Frozen):
+    path: str
+    state: Literal["current", "drifted", "absent"]
+
+
+class RulesCheck(_Frozen):
+    decision: Literal["allow", "deny"]
+    text: str = ""
+    report: str = ""
+    files: list[RulesFileState] = Field(default_factory=list)
+
+
+class RulesPort(_Frozen):
+    """`providers.rules` in .agenticframework/providers.json."""
+
+    command: str = Field(min_length=1)
+    version: str | None = None
+    contract: Literal[1] | None = None
+    setup: str | None = Field(default=None, min_length=1)
+
+
 class Ide(_Frozen):
     """One IDE's hook wiring, as the registry declares it."""
 
@@ -344,10 +433,13 @@ class Extends(_Frozen):
     #   session_start  extra lines in every agent's session-start context (process_gate.py)
     #   rules_extra    repo notes appended to every generated rule file (generate-ide-config.py)
     #   test_command   what those files name as this repo's test command
+    #   otel_endpoint  the collector those files name (contract/rules/v1: a render
+    #                  reads declarations, never the environment)
     #   artifacts      this repo's own document layout, over the framework's
     session_start: list[str] = Field(default_factory=list)
     rules_extra: list[str] = Field(default_factory=list)
     test_command: str | None = None
+    otel_endpoint: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
     artifacts: "Artifacts | None" = None
 
 

@@ -435,3 +435,253 @@ def _record_schema_problem(bodies: list[bytes]) -> Optional[str]:
         except (ValueError, jsonschema.ValidationError) as exc:
             return f"request {number}: {getattr(exc, 'message', exc)}"
     return None
+
+
+# ── The rules contract (contract/rules/v1/) ──────────────────────────────────
+#
+# A rules provider renders the files every IDE's agent reads and checks that a
+# repository still holds them. The cases are asked about a fixture repository
+# built fresh for each one; placing a render uses the contract's own placement
+# rules — the ones every caller uses (.agent-rfc/designs/rules-contract.md).
+
+RULES_CONTRACT = 1
+
+
+def _rules_dir() -> Path:
+    for root in (Path(os.environ["AGENTSMITH_DIR"]) if os.environ.get("AGENTSMITH_DIR") else None,
+                 Path(__file__).resolve().parent.parent, Path.home() / ".agent-framework"):
+        if root is not None and (root / "contract" / "rules" / f"v{RULES_CONTRACT}" / "cases.json").is_file():
+            return root / "contract" / "rules" / f"v{RULES_CONTRACT}"
+    raise FileNotFoundError(f"contract/rules/v{RULES_CONTRACT}/ not found in $AGENTSMITH_DIR, beside this "
+                            "package, or ~/.agent-framework — re-run install-ai-stack.sh")
+
+
+class RulesCase(BaseModel):
+    """One case from contract/rules/v1/cases.json — data, validated on the way in."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    verb: str = Field(min_length=1)
+    arrange: list[dict] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    expect: dict
+    why: str = ""
+
+
+@dataclass(frozen=True)
+class RulesReport:
+    provider: str
+    checks: list[Check]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.checks) and all(c.ok for c in self.checks)
+
+    def render(self) -> str:
+        lines = [f"rules contract v{RULES_CONTRACT} — provider: {self.provider}", ""]
+        lines += [f"  {'✅' if c.ok else '❌'} {c.name}" + (f" — {c.why}" if c.why else "") for c in self.checks]
+        kept = sum(1 for c in self.checks if c.ok)
+        lines += ["", f"{kept}/{len(self.checks)} cases" + ("" if self.passed else " — not conformant")]
+        return "\n".join(lines)
+
+
+def rules_cases() -> list[RulesCase]:
+    data = json.loads((_rules_dir() / "cases.json").read_text(encoding="utf-8"))
+    return [RulesCase.model_validate(case) for case in data["cases"]]
+
+
+def rules_fixture() -> dict:
+    return json.loads((_rules_dir() / "fixture.json").read_text(encoding="utf-8"))
+
+
+def _placement():
+    """scripts/rules_port.py beside the contract: the placement rules a caller
+    applies, one implementation for adopt, sync and this runner."""
+    import importlib.util
+
+    source = _rules_dir().parents[2] / "scripts" / "rules_port.py"
+    spec = importlib.util.spec_from_file_location("rules_port_conformance", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_rules_fixture(workdir: Path) -> Path:
+    import shutil
+
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    for rel, text in rules_fixture()["files"].items():
+        (workdir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / rel).write_text(text, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "--template=", str(workdir)], check=True)
+    return workdir
+
+
+_JUNK_ENV = ("AGENT_OWNER_ID", "AGENT_PHOENIX_ENDPOINT", "FRAMEWORK_VERSION")
+
+
+def _ask_rules(provider: str, verb: str, root: Path, env: dict[str, str]) -> tuple[int, str]:
+    base = {k: v for k, v in os.environ.items() if k not in _JUNK_ENV}
+    try:
+        done = subprocess.run([*shlex.split(provider), verb], cwd=root, input=json.dumps({"cwd": str(root)}),
+                              capture_output=True, text=True, check=False, timeout=120, env={**base, **env})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, str(exc)
+    return done.returncode, done.stdout
+
+
+def _schema_problem(name: str, answer: object) -> Optional[str]:
+    import jsonschema
+
+    schema = json.loads((_rules_dir() / name).read_text(encoding="utf-8"))
+    try:
+        jsonschema.validate(answer, schema)
+    except jsonschema.ValidationError as exc:
+        return f"{'/'.join(str(p) for p in exc.absolute_path) or '(root)'}: {exc.message[:200]}"
+    return None
+
+
+def _render(provider: str, root: Path, env: Optional[dict] = None) -> tuple[Optional[dict], str]:
+    """(the render, why not)."""
+    code, out = _ask_rules(provider, "render", root, env or {})
+    try:
+        answer = json.loads(out)
+    except ValueError:
+        return None, f"no JSON answer (exit {code})"
+    problem = _schema_problem("rendered.schema.json", answer)
+    if problem:
+        return None, f"not a render the schema allows — {problem}"
+    paths = [f["path"].lower() for f in answer["files"]]
+    if len(paths) != len(set(paths)):
+        return None, "a path is rendered twice"
+    return answer, ""
+
+
+def _arrange_rules(provider: str, root: Path, steps: list[dict], fixture: dict) -> Optional[str]:
+    """Apply a case's `arrange`; returns the path an edit or delete touched."""
+    port = _placement()
+    target = None
+    rendered: Optional[dict] = None
+    for step in steps:
+        op = step["op"]
+        if op == "place":
+            rendered, why = _render(provider, root)
+            if rendered is None:
+                raise ValueError(f"could not place the render: {why}")
+            for file in rendered["files"]:
+                path = root / file["path"]
+                existing = path.read_text(encoding="utf-8") if path.is_file() else None
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(port.place(existing, port.gm.RulesFile.model_validate(file)), encoding="utf-8")
+        elif op == "edit":
+            pick = next((f for f in (rendered or {}).get("files", []) if f["placement"] == step["placement"]), None)
+            if pick is None:
+                return None  # this provider places nothing that way: the case does not apply
+            target = pick["path"]
+            path = root / target
+            text = path.read_text(encoding="utf-8")
+            if step["where"] == "outside":
+                text = text.rstrip("\n") + "\n\nThe tenant's own line, after the block.\n"
+            elif step["placement"] == "block":
+                head, marker, rest = text.partition("<!-- agentsmith:rules:begin")
+                line, newline, body = rest.partition("\n")
+                text = head + marker + line + newline + "A line nobody rendered.\n" + body
+            else:
+                text = text + "A line nobody rendered.\n"
+            path.write_text(text, encoding="utf-8")
+        elif op == "delete":
+            pick = next((f for f in (rendered or {}).get("files", []) if f["kind"] == "instructions"), None)
+            if pick is None:
+                return None
+            target = pick["path"]
+            (root / target).unlink()
+        elif op == "note":
+            config = root / ".agenticframework" / "process-gates.json"
+            data = json.loads(config.read_text(encoding="utf-8"))
+            data["extends"]["rules_extra"][0] = fixture["notes"][0] + " (changed)"
+            config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        else:
+            raise ValueError(f"unknown arrange op {op!r}")
+    return target
+
+
+def _judge_render(case: RulesCase, provider: str, root: Path, fixture: dict) -> Check:
+    want = case.expect.get("render")
+    rendered, why = _render(provider, root, case.env)
+    if rendered is None:
+        return Check(case.name, False, why)
+    files = rendered["files"]
+    if want == "valid":
+        if not any(f["kind"] == "instructions" for f in files):
+            return Check(case.name, False, "no instructions file rendered")
+        return Check(case.name, True)
+    if want == "same-as-without-env":
+        plain, why = _render(provider, root)
+        if plain is None:
+            return Check(case.name, False, why)
+        same = json.dumps(plain, sort_keys=True) == json.dumps(rendered, sort_keys=True)
+        return Check(case.name, same, "" if same else f"the render changed with {', '.join(sorted(case.env))} set")
+    if want == "notes":
+        missing = [f"{f['path']} lacks note {i + 1}" for f in files if f["kind"] == "instructions"
+                   for i, note in enumerate(fixture["notes"]) if note not in f["text"]]
+        return Check(case.name, not missing, "; ".join(missing[:4]))
+    if want == "hand-written-not-whole":
+        taken = [f for f in files if f["path"] == fixture["hand_written"] and f["placement"] == "whole"]
+        return Check(case.name, not taken, f"{fixture['hand_written']} would be replaced whole" if taken else "")
+    raise ValueError(f"unknown render expectation {want!r}")
+
+
+def _judge_check(case: RulesCase, provider: str, root: Path, target: Optional[str]) -> Check:
+    code, out = _ask_rules(provider, "check", root, case.env)
+    try:
+        answer = json.loads(out)
+    except ValueError:
+        return Check(case.name, False, f"no JSON answer (exit {code})")
+    problem = _schema_problem("check.schema.json", answer)
+    if problem:
+        return Check(case.name, False, f"not a check result the schema allows — {problem}")
+    if answer["decision"] != case.expect["decision"]:
+        return Check(case.name, False, f"answered {answer['decision']}, the contract says {case.expect['decision']}")
+    if answer["decision"] == "deny" and not answer.get("text"):
+        return Check(case.name, False, "a deny must say why")
+    if "target" in case.expect:
+        found = {f["path"]: f["state"] for f in answer.get("files", [])}.get(target)
+        if found != case.expect["target"]:
+            return Check(case.name, False, f"{target} is reported {found or 'not at all'}, "
+                                           f"the contract says {case.expect['target']}")
+        if case.expect["target"] == "drifted" and target not in answer.get("text", ""):
+            return Check(case.name, False, f"the deny does not name {target}")
+    return Check(case.name, True)
+
+
+def run_rules(provider: str, workdir: Path) -> RulesReport:
+    """Every case of contract/rules/v1/cases.json against `provider`."""
+    fixture = rules_fixture()
+    checks = []
+    for case in rules_cases():
+        root = build_rules_fixture(workdir)
+        try:
+            target = _arrange_rules(provider, root, case.arrange, fixture)
+        except ValueError as exc:
+            checks.append(Check(case.name, False, str(exc)))
+            continue
+        if any(step["op"] in ("edit", "delete") for step in case.arrange) and target is None:
+            checks.append(Check(case.name, True, "not applicable: this provider places nothing that way"))
+            continue
+        if case.expect.get("answer") == "none":
+            code, out = _ask_rules(provider, case.verb, root, case.env)
+            try:
+                json.loads(out)
+                answered = bool(out.strip())
+            except ValueError:
+                answered = False
+            checks.append(Check(case.name, not answered,
+                                f"answered an unknown verb (exit {code})" if answered else ""))
+        elif case.verb == "render":
+            checks.append(_judge_render(case, provider, root, fixture))
+        else:
+            checks.append(_judge_check(case, provider, root, target))
+    return RulesReport(provider, checks)

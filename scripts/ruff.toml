@@ -29,6 +29,7 @@ extend-exclude = [
   "process_gate.py",
   "promote-learning.py",
   "requirements-gate.txt",
+  "rules_port.py",
   "run-evals.py",
   "run-security-checks.py",
   "security/__init__.py",

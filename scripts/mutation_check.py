@@ -798,6 +798,7 @@ CATALOGUE: tuple[Suite, ...] = (
             "scripts/gate_*.py",
             "scripts/generate-ide-config.py",
             "scripts/vouched_files.py",
+            "scripts/rules_port.py",
             "workflow-templates/agentsmith-gates.yml",
             "scripts/test/test_hook_chain.py",
             "scripts/test/test_hook_visibility_override.py",
@@ -863,8 +864,8 @@ CATALOGUE: tuple[Suite, ...] = (
             ),
             Mutation(
                 "the rules block is appended again on every run",
-                "runtime/adopt.py",
-                "    if _RULES_BLOCK.search(existing):",
+                "scripts/rules_port.py",
+                "    if _BLOCK.search(existing):",
                 "    if False:",
             ),
             Mutation(
@@ -926,9 +927,9 @@ CATALOGUE: tuple[Suite, ...] = (
             ),
             Mutation(
                 "a rule file AgentSmith generated gets the same rules appended again",
-                "runtime/adopt.py",
-                "target.write_text(text if generated_by_agentsmith(existing) else",
-                "target.write_text(text if False else",
+                "scripts/rules_port.py",
+                '        placement = "whole" if existing is None or _ours(rel, existing, titles) else "block"',
+                '        placement = "whole" if existing is None else "block"',
             ),
             Mutation(
                 "tenant init runs any post-checkout and vouches for what it wrote",
@@ -1130,6 +1131,56 @@ CATALOGUE: tuple[Suite, ...] = (
     # .agent-rfc/designs/record-contract.md — the record a gate provider sends a
     # portal: one model, both sides held to it, and conformance that can fail.
     Suite(
+        name="rules_contract",
+        tests=("scripts/test/test_rules_contract.py",),
+        mutations=(
+            Mutation(
+                "a check passes a block whatever its region says",
+                "scripts/rules_port.py",
+                '    return "current" if held is not None and held == file.text.rstrip() else "drifted"',
+                '    return "current" if held is not None else "drifted"',
+            ),
+            Mutation(
+                "the render reads the owner from the environment — CI and a developer disagree",
+                "scripts/generate-ide-config.py",
+                '        "owner_id": declared.get("tenant.owner") or "unknown@unknown",',
+                '        "owner_id": __import__("os").environ.get("AGENT_OWNER_ID") or declared.get("tenant.owner") '
+                'or "unknown@unknown",',
+            ),
+            Mutation(
+                "a rules provider may write the repository's hooks",
+                "scripts/gate_models.py",
+                'RULES_FORBIDDEN = (".git", ".githooks", ".agenticframework", ".github/workflows", ".github/actions")',
+                'RULES_FORBIDDEN = (".git", ".agenticframework", ".github/workflows", ".github/actions")',
+            ),
+            Mutation(
+                "the caller writes what a provider renders without checking a path",
+                "runtime/adopt.py",
+                "        return port.gm.RulesRender.model_validate_json(done.stdout)",
+                "        return port.gm.RulesRender.model_construct(files=[port.gm.RulesFile.model_construct(**f) "
+                "for f in json.loads(done.stdout)['files']])",
+            ),
+            Mutation(
+                "a declared rules provider that gives no answer passes the CI step",
+                ".githooks/process-gate",
+                "    ask_provider check '{}' \"$where\" rules\n    exit $?",
+                "    ask_provider check '{}' \"$where\" rules\n    exit 0",
+            ),
+            Mutation(
+                "`provider` is read as a repository path — the gate finds no registry",
+                "scripts/process_gate.py",
+                '    return f"{FRAMEWORK_PREFIX}{PROVIDER_DOCUMENTS[key]}" if value == PROVIDER_VALUE else value',
+                "    return value",
+            ),
+            Mutation(
+                "sync renames a document the tenant chose, not only what adopt wrote",
+                "runtime/sync.py",
+                """        text = re.sub(rf'("{key}"\\s*:\\s*)"{re.escape(legacy)}"', r'\\1"provider"', text)""",
+                """        text = re.sub(rf'("{key}"\\s*:\\s*)"@framework/[^"]*"', r'\\1"provider"', text)""",
+            ),
+        ),
+    ),
+    Suite(
         name="record_contract",
         tests=("scripts/test/test_record_contract.py",),
         mutations=(
@@ -1263,18 +1314,15 @@ CATALOGUE: tuple[Suite, ...] = (
             Mutation(
                 "a rule file is rewritten whole, losing the tenant's own prose around the block",
                 "runtime/sync.py",
-                "        if rel in _RULE_FILES and target.is_file() and not _generated_whole(target):\n"
-                "            target.write_text(_with_block(target, text), encoding=\"utf-8\")\n"
-                "        else:\n"
-                "            target.write_text(text, encoding=\"utf-8\")",
-                '        target.write_text(text, encoding="utf-8")',
+                "            shared[file.path] = port.place(existing, file)",
+                "            shared[file.path] = file.text",
             ),
             Mutation(
                 "Claude's settings are judged by the whole file, so a tenant's own permissions "
                 "freeze their gate wiring",
                 "runtime/sync.py",
-                "        if rel in _MERGED and here.is_file():",
-                "        if False:",
+                "        if (rel in _MERGED or rel in regions) and here.is_file():",
+                "        if rel in regions and here.is_file():",
             ),
             Mutation(
                 "adopt stops writing the sync workflow — a tenant never hears it is behind",

@@ -436,8 +436,20 @@ class FairnessCase(GoldenCase):
     attribute_value: str = Field(min_length=1)
 
 
+class ContextDocument(BaseModel):
+    """One retrieved document, as a retrieval layer produces it: the judge
+    quotes its `text` under its `id` (or `title`)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    text: str = Field(min_length=1)
+    id: str | None = None
+    title: str | None = None
+
+
 class HallucinationCase(GoldenCase):
-    retrieved_context: list[str] | str | None = None
+    # The three shapes the judge renders (eval_judge._as_context).
+    retrieved_context: str | list[str | ContextDocument] | None = None
     expect_hallucination: bool = False
     score_hallucination: bool = True
 
@@ -448,9 +460,10 @@ class AdversarialCase(_Case):
 
 
 class RagPoisonCase(_Case):
-    query: str = Field(min_length=1)
+    query: str | None = None  # reported, not scored
     document: str = Field(min_length=1)
-    expect: str = Field(min_length=1)
+    # Its scorer reads anything but `quarantine` as `safe`: a typo must not.
+    expect: Literal["quarantine", "safe"]
     pair_id: str | None = None
 
 

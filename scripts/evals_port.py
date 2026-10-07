@@ -95,18 +95,20 @@ def dataset(path: Path, suite: str) -> tuple[Optional[list[dict]], str, int]:
     if not isinstance(cases, list):
         return None, f"{rel} is not a list of cases", 0
     model = gm.EVAL_CASES[suite]
-    problems = []
+    problems, outputless = [], False
     for index, case in enumerate(cases):
         try:
             model.model_validate(case)
         except gm.ValidationError as exc:
             name = case.get("id") if isinstance(case, dict) and case.get("id") else f"#{index + 1}"
-            fields = sorted({".".join(str(p) for p in e["loc"]) or "case" for e in exc.errors()})
+            # The top-level field each error is about: a nested union reports
+            # every branch it tried, and the field is what the tenant fixes.
+            fields = sorted({str(e["loc"][0]) if e["loc"] else "case" for e in exc.errors()})
+            outputless = outputless or "actual_output" in fields
             problems.append(f"{name} ({', '.join(fields)})")
     if problems:
         shown = "; ".join(problems[:5]) + (f"; and {len(problems) - 5} more" if len(problems) > 5 else "")
-        output = " — a judged case carries the output the application produced" \
-            if suite in gm.JUDGED_SUITES else ""
+        output = " — a judged case carries the output the application produced" if outputless else ""
         why = f"{len(problems)} of {len(cases)} case(s) in {rel} do not match the contract: {shown}{output}"
         return None, why, len(cases)
     return cases, "", len(cases)

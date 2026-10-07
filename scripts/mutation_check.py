@@ -1289,6 +1289,25 @@ CATALOGUE: tuple[Suite, ...] = (
                 'if declared == "warn" or verdict == "not_gradable":',
             ),
             Mutation(
+                "retrieved documents are refused — a retrieval tenant's dataset is not gradable",
+                "scripts/gate_models.py",
+                "    retrieved_context: str | list[str | ContextDocument] | None = None",
+                "    retrieved_context: list[str] | str | None = None",
+            ),
+            Mutation(
+                "a rag_poison typo is read as safe",
+                "scripts/gate_models.py",
+                '    expect: Literal["quarantine", "safe"]',
+                "    expect: str = Field(min_length=1)",
+            ),
+            Mutation(
+                "every judged refusal blames a missing output",
+                "scripts/evals_port.py",
+                '        output = " — a judged case carries the output the application produced" if outputless else ""',
+                '        output = " — a judged case carries the output the application produced" '
+                'if suite in gm.JUDGED_SUITES else ""',
+            ),
+            Mutation(
                 "a warning declared for one suite excuses another",
                 ".githooks/process-gate",
                 "    declared = port.get(verdict, {}).get(suite) if isinstance(port, dict) else None",

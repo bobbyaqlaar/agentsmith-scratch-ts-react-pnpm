@@ -101,15 +101,10 @@ def main() -> None:
     # Say what was ignored. A declaration outranks an ambient export, which is
     # deliberate — but an operator who exports something and sees no effect,
     # with nothing said, will reasonably conclude the framework is broken.
-    from runtime.config import shadowed_env
+    from runtime.config import shadowed_notes
 
-    for var, value in sorted(shadowed_env().items()):
-        print(
-            f"[worker] NOTE: {var}={value!r} in the environment was IGNORED — "
-            f"a file declares it. Add it to `env_overrides:` in tenant.yaml to "
-            f"let the environment win.",
-            file=sys.stderr,
-        )
+    for note in shadowed_notes():
+        print(f"[worker] NOTE: {note}", file=sys.stderr)
 
     if backend == "temporal":
         _start_temporal_worker(tenant_id)

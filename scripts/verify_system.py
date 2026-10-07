@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -46,10 +47,44 @@ SOFT_PACKAGES = {"langgraph"}  # warn-only; not hard requirement
 
 
 from _shared import (  # noqa: E402
+    _CREDENTIAL_NAME,
+    _dotenv_pairs,
     _repo_root,
+    _standalone_env_overrides,
     fixtures_path,
     judge_model as _resolve_judge_model,
 )
+
+# The environment this process was started with, before any check loads a
+# repository's .env into it — what the shell actually exported.
+_AMBIENT = dict(os.environ)
+SHELL_PROFILES = (".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile")
+_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
+
+
+def exported_credentials(home: Path) -> list[str]:
+    """`~/.zshrc:12 GEMINI_API_KEY` for each credential a shell profile sets —
+    names and places only, never a value."""
+    found = []
+    for name in SHELL_PROFILES:
+        try:
+            lines = (home / name).read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            match = _ASSIGNMENT.match(line)
+            if match and _CREDENTIAL_NAME.search(match.group(1)):
+                found.append(f"~/{name}:{number} {match.group(1)}")
+    return found
+
+
+def shadowed_credentials(root: Path, ambient: dict) -> list[str]:
+    """Credentials this repository's .env declares that the shell holds with a
+    different value — the ones the loader replaces. Names only."""
+    overrides = _standalone_env_overrides(root)
+    return [key for key, value in _dotenv_pairs(root / ".env")
+            if _CREDENTIAL_NAME.search(key) and key not in overrides
+            and value and ambient.get(key) and ambient[key] != value]
 
 
 def _required_ollama_models() -> list[str]:
@@ -256,6 +291,20 @@ def run_checks() -> bool:
             failures += 1
         else:
             _check(".agent-history.log clean (no unresolved issues)", True)
+    print()
+
+    # ── Credentials and the shell ────────────────────────────────────────────
+    # Warnings, not failures: where a key lives is the operator's choice, and
+    # the loader already makes a repository's .env win over the shell.
+    print("Credentials:")
+    exported = exported_credentials(Path.home())
+    _check("no credential exported in a shell profile", not exported,
+           "; ".join(exported) + " — keep keys in each repository's .env (gitignored), not in a profile",
+           warn_only=True)
+    shadowed = shadowed_credentials(root, _AMBIENT)
+    _check("no shell credential differs from this repository's .env", not shadowed,
+           ", ".join(shadowed) + " — the .env value is used; unset the export, or name it in tenant.yaml "
+           "`env_overrides` to let the shell win", warn_only=True)
     print()
 
     # ── Summary ───────────────────────────────────────────────────────────────

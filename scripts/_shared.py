@@ -40,6 +40,7 @@ Not here on purpose:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -402,6 +403,50 @@ def _load_dotenv(root: Optional[Path] = None) -> None:
     load_env_file(root)
 
 
+# runtime.config.CREDENTIAL_NAME, mirrored for script-only processes; a test
+# holds the two to the same pattern.
+_CREDENTIAL_NAME = re.compile(r"(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD)(?:_|$)")
+_CREDENTIALS_SAID: set[str] = set()
+
+
+def _standalone_env_overrides(root: Path) -> set[str]:
+    """`env_overrides` in tenant.yaml, when YAML is importable here; none when
+    it is not — the declared credential then wins, the safe side."""
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        doc = yaml.safe_load((root / ".agenticframework" / "tenant.yaml").read_text()) or {}
+    except Exception:  # fail-open to no overrides: the .env value wins
+        return set()
+    declared = doc.get("env_overrides") if isinstance(doc, dict) else None
+    if isinstance(declared, str):
+        return {declared.strip()}
+    if isinstance(declared, (list, tuple)):
+        return {str(x).strip() for x in declared if str(x).strip()}
+    return set()
+
+
+def _dotenv_pairs(path: Path) -> list[tuple[str, str]]:
+    """(key, value) for each assignment in a `.env`, parsed as the loaders read
+    it; empty when there is no readable file."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:  # fail-open: .env is optional convenience, never fatal
+        return []
+    pairs = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, raw = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if key:
+            pairs.append((key, _dotenv_value(raw)))
+    return pairs
+
+
 def _load_dotenv_standalone(root: Optional[Path] = None) -> None:
     """The os.environ half of `runtime.config.load_env_file`, for script-only
     processes. A DELIBERATE mirror — see `_load_dotenv`.
@@ -413,25 +458,17 @@ def _load_dotenv_standalone(root: Optional[Path] = None) -> None:
     with the runtime's by luck rather than by construction.
     """
     path = _repo_root(root) / ".env"
-    if not path.exists():
-        return
-    try:
-        lines = path.read_text().splitlines()
-    except OSError:  # fail-open: .env is optional convenience, never fatal
-        return
-
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, raw = line.partition("=")
-        key = key.strip()
-        if key.startswith("export "):
-            key = key[len("export "):].strip()
-        if not key:
-            continue
+    for key, value in _dotenv_pairs(path):
         if key not in os.environ:
-            os.environ[key] = _dotenv_value(raw)
+            os.environ[key] = value
+        elif value and os.environ[key] != value and _CREDENTIAL_NAME.search(key) \
+                and key not in _standalone_env_overrides(path.parent):
+            # A declared credential wins over the shell, as in runtime.config.
+            os.environ[key] = value
+            if key not in _CREDENTIALS_SAID:
+                _CREDENTIALS_SAID.add(key)
+                print(f"⚠️  {key} in this shell differs from {path} — using the .env value. Unset the export, "
+                      f"or name {key} in tenant.yaml `env_overrides` to let the shell win.", file=sys.stderr)
 
 
 def _phoenix_request(

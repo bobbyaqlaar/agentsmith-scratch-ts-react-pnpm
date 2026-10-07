@@ -52,14 +52,21 @@ without a redeploy — it says so, in the file, where it can be reviewed:
 
     env_overrides: [AGENT_MONTHLY_USD_CAP]
 
-Secrets are unaffected. An API key has no declaration anywhere, so rule 4
-applies and `--set-secrets` reaches it exactly as before.
+Credentials follow the same rule, through the environment their readers use.
+Where no file names a key, rule 4 applies and `--set-secrets` reaches it exactly
+as before. Where the repository's `.env` names one (`is_credential`), the `.env`
+value is what `os.environ` holds — a key exported in a profile, an old terminal
+or one command must not quietly replace the one the repository declares — unless
+`env_overrides` names it. The override is reported by name; a credential's value
+is never printed or recorded (.agent-rfc/designs/env-file-credentials.md).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
@@ -132,6 +139,30 @@ def _dotenv_value(raw: str) -> str:
 _ENV_FILE: dict[str, str] = {}
 _SHADOWED: dict[str, str] = {}
 
+# A credential is named as one: API_KEY, TOKEN, SECRET or PASSWORD as a whole
+# `_`-separated part of the name — GEMINI_API_KEY, ANTHROPIC_API_KEY_JUDGE,
+# OPS_PORTAL_SYNC_TOKEN. scripts/_shared.py mirrors this pattern, held by a test.
+CREDENTIAL_NAME = re.compile(r"(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD)(?:_|$)")
+# What `shadowed_env()` records for a credential in place of its value.
+REDACTED = "<not shown: a credential>"
+
+
+def is_credential(name: str) -> bool:
+    return bool(CREDENTIAL_NAME.search(name))
+
+
+def _declared_credential_wins(key: str, value: str, path: Path, root: Optional[Path]) -> None:
+    """The repository's `.env` declares credential `key` and the shell holds a
+    different value: the declaration is what every reader of `os.environ` sees,
+    unless `env_overrides` lets the shell win. Said once, by name."""
+    if key in env_overrides(root):
+        return
+    os.environ[key] = value
+    if _SHADOWED.get(key) != REDACTED:
+        _SHADOWED[key] = REDACTED
+        print(f"⚠️  {key} in this shell differs from {path} — using the .env value. Unset the export, or "
+              f"name {key} in tenant.yaml `env_overrides` to let the shell win.", file=sys.stderr)
+
 
 def load_env_file(root: Optional[Path] = None) -> int:
     """Parse repo-root `.env`. Returns how many keys it declared.
@@ -144,7 +175,9 @@ def load_env_file(root: Optional[Path] = None) -> int:
     it directly (httpx proxies, the OTLP exporter, psycopg), but only where the
     variable is not already set: the mirror must not change what a container was
     configured with. `resolve()` reads the dict, so the mirror's precedence does
-    not affect the framework's own resolution.
+    not affect the framework's own resolution. A credential is the exception:
+    its readers have only `os.environ`, so the declared value is written there
+    (`_declared_credential_wins`).
     """
     path = repo_root(root) / ".env"
     if not path.exists():
@@ -168,6 +201,8 @@ def load_env_file(root: Optional[Path] = None) -> int:
         _ENV_FILE[key] = value
         if key not in os.environ:
             os.environ[key] = value
+        elif value and os.environ[key] != value and is_credential(key):
+            _declared_credential_wins(key, value, path, root)
     return len(_ENV_FILE)
 
 
@@ -179,6 +214,14 @@ def shadowed_env() -> dict[str, str]:
     they will be half right.
     """
     return dict(_SHADOWED)
+
+
+def shadowed_notes() -> list[str]:
+    """One line per ignored ambient value, for a process to print at startup.
+    A credential is named, never shown."""
+    return [f"{var}{'' if value == REDACTED else '=' + repr(value)} in the environment was IGNORED — a file "
+            f"declares it. Add it to `env_overrides:` in tenant.yaml to let the environment win."
+            for var, value in sorted(_SHADOWED.items())]
 
 
 _CACHE: dict[Path, dict] = {}

@@ -1249,6 +1249,48 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="env_file_credentials",
+        tests=("runtime/test/test_config.py", "scripts/test/test_env_file_credentials.py"),
+        mutations=(
+            Mutation(
+                "a stale export beats the credential the repository declares",
+                "runtime/config.py",
+                "        elif value and os.environ[key] != value and is_credential(key):",
+                "        elif False:",
+            ),
+            Mutation(
+                "env_overrides no longer lets the shell win for a credential",
+                "runtime/config.py",
+                "    if key in env_overrides(root):\n        return\n    os.environ[key] = value",
+                "    if False:\n        return\n    os.environ[key] = value",
+            ),
+            Mutation(
+                "the warning shows the declared key",
+                "runtime/config.py",
+                '        print(f"⚠️  {key} in this shell differs from {path}',
+                '        print(f"⚠️  {key}={value} in this shell differs from {path}',
+            ),
+            Mutation(
+                "the startup note shows a credential's record as a value",
+                "runtime/config.py",
+                "    return [f\"{var}{'' if value == REDACTED else '=' + repr(value)} in the environment",
+                "    return [f\"{var}{'=' + repr(value)} in the environment",
+            ),
+            Mutation(
+                "script-only processes keep the stale export",
+                "scripts/_shared.py",
+                "        elif value and os.environ[key] != value and _CREDENTIAL_NAME.search(key) \\",
+                "        elif False and os.environ[key] != value and _CREDENTIAL_NAME.search(key) \\",
+            ),
+            Mutation(
+                "doctor prints the profile line, value and all",
+                "scripts/verify_system.py",
+                '                found.append(f"~/{name}:{number} {match.group(1)}")',
+                '                found.append(f"~/{name}:{number} {line.strip()}")',
+            ),
+        ),
+    ),
+    Suite(
         name="evals_contract",
         tests=("scripts/test/test_evals_contract.py",),
         mutations=(

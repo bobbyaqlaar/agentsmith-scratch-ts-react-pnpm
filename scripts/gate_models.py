@@ -33,6 +33,9 @@ __all__ = [
     "DecisionV2",
     "DevRecord",
     "Deviation",
+    "EvalsPort",
+    "EvalsRequest",
+    "EvalsThresholds",
     "Extends",
     "GateEvent",
     "GateEventV2",
@@ -53,6 +56,7 @@ __all__ = [
     "RulesPort",
     "RulesRender",
     "RulesRequest",
+    "Scorecard",
     "Signoff",
     "ValidationError",
     "check_approvals",
@@ -400,6 +404,102 @@ class RulesPort(_Frozen):
     setup: str | None = Field(default=None, min_length=1)
 
 
+# ── The evals a provider judges for a tenant (contract/evals/v1/) ──────────
+#
+# The tenant owns its datasets and its application's outputs; the provider
+# judges them and answers with a scorecard. Cases carry what the suite reads and
+# may carry more (`extra="allow"`): a tenant's own annotations break nothing
+# (.agent-rfc/designs/evals-contract.md).
+
+EVAL_SUITES = ("golden", "fairness", "hallucination", "adversarial", "rag_poison")
+# Suites a model judges: each case must carry the output the tenant's app produced.
+JUDGED_SUITES = ("golden", "fairness", "hallucination")
+EVAL_VERDICTS = ("pass", "fail", "no_verdict", "not_gradable")
+
+
+class _Case(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(min_length=1)
+
+
+class GoldenCase(_Case):
+    input: str = Field(min_length=1)
+    actual_output: str = Field(min_length=1)
+    reference_output: str | None = None
+    expected_tool: str | None = None
+
+
+class FairnessCase(GoldenCase):
+    pair_id: str = Field(min_length=1)
+    protected_attribute: str = Field(min_length=1)
+    attribute_value: str = Field(min_length=1)
+
+
+class HallucinationCase(GoldenCase):
+    retrieved_context: list[str] | str | None = None
+    expect_hallucination: bool = False
+    score_hallucination: bool = True
+
+
+class AdversarialCase(_Case):
+    input: str = Field(min_length=1)
+    expect: Literal["block", "flag", "safe"]
+
+
+class RagPoisonCase(_Case):
+    query: str = Field(min_length=1)
+    document: str = Field(min_length=1)
+    expect: str = Field(min_length=1)
+    pair_id: str | None = None
+
+
+EVAL_CASES = {"golden": GoldenCase, "fairness": FairnessCase, "hallucination": HallucinationCase,
+              "adversarial": AdversarialCase, "rag_poison": RagPoisonCase}
+
+
+class EvalsRequest(BaseModel):
+    """What a caller sends on stdin. Unknown keys are ignored."""
+
+    model_config = ConfigDict(extra="allow")
+
+    suite: Literal["golden", "fairness", "hallucination", "adversarial", "rag_poison"]
+    fail_below: float | None = Field(default=None, ge=0.0, le=1.0)
+    fail_above: float | None = Field(default=None, ge=0.0, le=1.0)
+    cwd: str | None = None
+
+
+class Scorecard(BaseModel):
+    """A provider's answer to `run`. The keys below are the contract; a provider
+    adds its own (AgentSmith's carry every field its scorecard always had, which
+    the security harness, the promotion loop and the evidence pack read)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: Literal[1] = Field(default=1, alias="schema")
+    suite: Literal["golden", "fairness", "hallucination", "adversarial", "rag_poison"]
+    verdict: Literal["pass", "fail", "no_verdict", "not_gradable"]
+    reason: str = ""
+    threshold: float | None = None
+    fail_above: float | None = None
+    cases_total: int = Field(default=0, ge=0)
+    cases_graded: int = Field(default=0, ge=0)
+
+
+class EvalsPort(_Frozen):
+    """`providers.evals` in .agenticframework/providers.json. `no_verdict` and
+    `not_gradable` name the suites where that verdict only warns — an exception to
+    closed-in-CI the tenant declares, in an always-governed file."""
+
+    command: str = Field(min_length=1)
+    version: str | None = None
+    contract: Literal[1] | None = None
+    no_verdict: dict[Literal["golden", "fairness", "hallucination", "adversarial", "rag_poison"],
+                     Literal["warn"]] = Field(default_factory=dict)
+    not_gradable: dict[Literal["golden", "fairness", "hallucination", "adversarial", "rag_poison"],
+                       Literal["warn"]] = Field(default_factory=dict)
+
+
 class Ide(_Frozen):
     """One IDE's hook wiring, as the registry declares it."""
 
@@ -436,11 +536,21 @@ class Extends(_Frozen):
     #   otel_endpoint  the collector those files name (contract/rules/v1: a render
     #                  reads declarations, never the environment)
     #   artifacts      this repo's own document layout, over the framework's
+    #   evals          per-suite thresholds an evals provider applies (contract/evals/v1)
     session_start: list[str] = Field(default_factory=list)
     rules_extra: list[str] = Field(default_factory=list)
     test_command: str | None = None
     otel_endpoint: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
     artifacts: "Artifacts | None" = None
+    evals: dict[Literal["golden", "fairness", "hallucination", "adversarial", "rag_poison"],
+                "EvalsThresholds"] = Field(default_factory=dict)
+
+
+class EvalsThresholds(_Frozen):
+    """One suite's bars: a floor on the average score, a ceiling on a rate."""
+
+    fail_below: float | None = Field(default=None, ge=0.0, le=1.0)
+    fail_above: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class Artifact(_Frozen):

@@ -1249,6 +1249,54 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="evals_contract",
+        tests=("scripts/test/test_evals_contract.py",),
+        mutations=(
+            Mutation(
+                "a judge that never answered is reported as a pass",
+                "scripts/evals_port.py",
+                '    elif said == "no_verdict":\n        verdict = "no_verdict"',
+                '    elif said == "no_verdict":\n        verdict = "pass"',
+            ),
+            Mutation(
+                "a judged case without its output is graded",
+                "scripts/gate_models.py",
+                "    input: str = Field(min_length=1)\n    actual_output: str = Field(min_length=1)",
+                "    input: str = Field(min_length=1)\n    actual_output: str | None = None",
+            ),
+            Mutation(
+                "the runner's environment reaches the scoring's bars",
+                "scripts/evals_port.py",
+                "    for name in THRESHOLD_ENV:\n        os.environ.pop(name, None)",
+                "    for name in ():\n        os.environ.pop(name, None)",
+            ),
+            Mutation(
+                "the declaration beats the request's bar",
+                "scripts/evals_port.py",
+                "(request.fail_below, declared.fail_below, registry_fail_below)",
+                "(declared.fail_below, request.fail_below, registry_fail_below)",
+            ),
+            Mutation(
+                "a withdrawn judge model reads as weather, not a broken configuration",
+                "scripts/evals_port.py",
+                '    elif said == "no_verdict" and code == 1:',
+                "    elif False:",
+            ),
+            Mutation(
+                "the launcher passes a suite that was not gradable",
+                ".githooks/process-gate",
+                'if declared == "warn":',
+                'if declared == "warn" or verdict == "not_gradable":',
+            ),
+            Mutation(
+                "a warning declared for one suite excuses another",
+                ".githooks/process-gate",
+                "    declared = port.get(verdict, {}).get(suite) if isinstance(port, dict) else None",
+                "    declared = next(iter(port.get(verdict, {}).values()), None) if isinstance(port, dict) else None",
+            ),
+        ),
+    ),
+    Suite(
         name="record_contract",
         tests=("scripts/test/test_record_contract.py",),
         mutations=(

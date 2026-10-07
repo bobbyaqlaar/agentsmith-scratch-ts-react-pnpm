@@ -68,6 +68,8 @@ exec bash "$(dirname "${BASH_SOURCE[0]}")/chain" "$(basename "${BASH_SOURCE[0]}"
 # in-process — the install running adopt IS that provider.
 RULES_COMMAND = "agentsmith rules"
 RULES_CONTRACT = 1
+EVALS_COMMAND = "agentsmith evals"
+EVALS_CONTRACT = 1
 
 SOURCE_EXTENSIONS = {
     "python-fastapi": (".py",),
@@ -467,7 +469,8 @@ def providers_declaration(command: str = "agentsmith gate", setup: Optional[str]
                   "contract/gate/v3/protocol.md.",
         "contract": GATE_CONTRACT,
         "providers": {"gate": {"command": command, "version": f"^{major}", "setup": setup or setup_reference()},
-                      "rules": {"command": RULES_COMMAND, "version": f"^{major}", "contract": RULES_CONTRACT}},
+                      "rules": {"command": RULES_COMMAND, "version": f"^{major}", "contract": RULES_CONTRACT},
+                      "evals": {"command": EVALS_COMMAND, "version": f"^{major}", "contract": EVALS_CONTRACT}},
     }, indent=2) + "\n"
 
 

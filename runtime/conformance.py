@@ -834,3 +834,232 @@ def judge_case(case: TelemetryCase) -> tuple[bool, str]:
     if note and not any(note in n for n in verdict.notes):
         return False, f"the report does not note {note}"
     return True, ""
+
+
+# ── The evals contract (contract/evals/v1/) ─────────────────────────────────
+#
+# An evals provider judges a tenant's dataset and answers with a scorecard. The
+# judge it calls is the runner's: a stub on loopback that answers with the
+# scores the fixture's fixed outputs carry, so a conformance run calls no model
+# and never drifts (.agent-rfc/designs/evals-contract.md).
+
+EVALS_CONTRACT = 1
+STUB_JUDGE_URL_ENV = "EVALS_STUB_JUDGE_URL"
+STUB_JUDGE_KEY_ENV = "EVALS_STUB_JUDGE_KEY"
+STUB_JUDGE_KEY = "conformance-stub-judge"
+# What a runner's own environment may carry that would decide an eval for it.
+_EVALS_JUNK_ENV = ("EVAL_FAIL_BELOW", "FAIRNESS_FAIL_BELOW", "HALLUCINATION_FAIL_ABOVE", "ADVERSARIAL_FAIL_ABOVE",
+                   "RAG_POISON_FAIL_ABOVE", "FAIRNESS_PARITY_FAIL_BELOW", "FAIRNESS_SCORE_SPREAD_FAIL_ABOVE",
+                   "AGENT_JUDGE_MODEL", "AGENT_MODEL_PROFILE", "AI_STACK_MODE", "EVAL_RPM")
+
+
+def _evals_dir() -> Path:
+    for root in (Path(os.environ["AGENTSMITH_DIR"]) if os.environ.get("AGENTSMITH_DIR") else None,
+                 Path(__file__).resolve().parent.parent, Path.home() / ".agent-framework"):
+        if root is not None and (root / "contract" / "evals" / f"v{EVALS_CONTRACT}" / "cases.json").is_file():
+            return root / "contract" / "evals" / f"v{EVALS_CONTRACT}"
+    raise FileNotFoundError(f"contract/evals/v{EVALS_CONTRACT}/ not found in $AGENTSMITH_DIR, beside this "
+                            "package, or ~/.agent-framework — re-run install-ai-stack.sh")
+
+
+class EvalsCase(BaseModel):
+    """One case from contract/evals/v1/cases.json — data, validated on the way in."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    verb: str = Field(min_length=1)
+    suite: str = Field(min_length=1)
+    dataset: Optional[str]
+    request: dict = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+    judge: str = Field(default="up", pattern=r"^(up|down)$")
+    expect: dict
+    why: str = ""
+
+
+@dataclass(frozen=True)
+class EvalsReport:
+    provider: str
+    checks: list[Check]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.checks) and all(c.ok for c in self.checks)
+
+    def render(self) -> str:
+        lines = [f"evals contract v{EVALS_CONTRACT} — provider: {self.provider}", ""]
+        lines += [f"  {'✅' if c.ok else '❌'} {c.name}" + (f" — {c.why}" if c.why else "") for c in self.checks]
+        kept = sum(1 for c in self.checks if c.ok)
+        lines += ["", f"{kept}/{len(self.checks)} cases" + ("" if self.passed else " — not conformant")]
+        return "\n".join(lines)
+
+
+def evals_cases() -> list[EvalsCase]:
+    data = json.loads((_evals_dir() / "cases.json").read_text(encoding="utf-8"))
+    return [EvalsCase.model_validate(case) for case in data["cases"]]
+
+
+def evals_fixture() -> dict:
+    return json.loads((_evals_dir() / "fixture.json").read_text(encoding="utf-8"))
+
+
+def build_evals_fixture(workdir: Path, case: EvalsCase) -> Path:
+    import shutil
+
+    fixture = evals_fixture()
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    for rel, text in fixture["files"].items():
+        (workdir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / rel).write_text(text, encoding="utf-8")
+    if case.dataset is not None:
+        dataset = fixture["datasets"][case.dataset]
+        if dataset["suite"] != case.suite:
+            raise ValueError(f"case {case.name!r} asks {case.suite} about a {dataset['suite']} dataset")
+        path = workdir / fixture["paths"][case.suite]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dataset["cases"], indent=2) + "\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "--template=", str(workdir)], check=True)
+    return workdir
+
+
+class StubJudge:
+    """An OpenAI-compatible judge on loopback. It answers every chat completion
+    with a verdict built from the markers in the request — `SCORE=`,
+    `HALLUCINATION=`, `FAIRNESS=`, the first of each — and refuses (401) a call
+    without its key. Use as a context manager; `url` is the base a client
+    appends `/chat/completions` to."""
+
+    def __init__(self, key: str = STUB_JUDGE_KEY) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        markers = {name: re.compile(rf"{name}=([0-9]+(?:\.[0-9]+)?)")
+                   for name in ("SCORE", "HALLUCINATION", "FAIRNESS")}
+        self.calls = 0
+        judge = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                judge.calls += 1
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
+                if self.headers.get("Authorization", "") != f"Bearer {key}":
+                    return self._send(401, {"error": {"message": "the stub judge needs its key"}})
+                found = {name: float(m.group(1)) for name, rx in markers.items() if (m := rx.search(body))}
+                score = found.get("SCORE", 0.0)
+                verdict: dict = {"correctness": 1 if score >= 0.5 else 0, "tool_accuracy": 1, "score": score,
+                                 "quality_notes": "stub judge"}
+                if "HALLUCINATION" in found:
+                    verdict["hallucination"] = found["HALLUCINATION"]
+                if "FAIRNESS" in found:
+                    verdict["fairness"] = int(found["FAIRNESS"])
+                try:
+                    model = json.loads(body).get("model", "stub-judge")
+                except ValueError:
+                    model = "stub-judge"
+                self._send(200, {"id": f"stub-{judge.calls}", "object": "chat.completion", "model": model,
+                                 "choices": [{"index": 0, "finish_reason": "stop",
+                                              "message": {"role": "assistant", "content": json.dumps(verdict)}}],
+                                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+            def _send(self, status: int, payload: dict) -> None:
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *_args) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}/v1"
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self) -> "StubJudge":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _closed_port_url() -> str:
+    """A loopback URL nothing listens on: a judge that does not answer."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    return f"http://127.0.0.1:{port}/v1"
+
+
+def _ask_evals(provider: str, case: EvalsCase, root: Path, judge_url: str) -> tuple[int, str]:
+    base = {k: v for k, v in os.environ.items() if k not in _EVALS_JUNK_ENV}
+    env = {**base, STUB_JUDGE_URL_ENV: judge_url, STUB_JUDGE_KEY_ENV: STUB_JUDGE_KEY, **case.env}
+    request = {"suite": case.suite, "cwd": str(root.resolve()), **case.request}
+    try:
+        done = subprocess.run([*shlex.split(provider), case.verb], cwd=root, input=json.dumps(request),
+                              capture_output=True, text=True, check=False, timeout=300, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, str(exc)
+    return done.returncode, done.stdout
+
+
+def _evals_schema_problem(answer: object) -> Optional[str]:
+    import jsonschema
+
+    schema = json.loads((_evals_dir() / "scorecard.schema.json").read_text(encoding="utf-8"))
+    try:
+        jsonschema.validate(answer, schema)
+    except jsonschema.ValidationError as exc:
+        return f"{'/'.join(str(p) for p in exc.absolute_path) or '(root)'}: {exc.message[:200]}"
+    return None
+
+
+def _judge_scorecard(case: EvalsCase, code: int, out: str) -> Check:
+    try:
+        answer = json.loads(out)
+    except ValueError:
+        return Check(case.name, False, f"no JSON answer (exit {code})")
+    if code != 0:
+        return Check(case.name, False, f"answered, but exited {code} — a provider that answers exits 0")
+    problem = _evals_schema_problem(answer)
+    if problem:
+        return Check(case.name, False, f"not a scorecard the schema allows — {problem}")
+    if answer["suite"] != case.suite:
+        return Check(case.name, False, f"a scorecard for {answer['suite']}, asked about {case.suite}")
+    want = case.expect["verdict"]
+    if answer["verdict"] != want:
+        why = f" ({answer['reason']})" if answer.get("reason") else ""
+        return Check(case.name, False, f"answered {answer['verdict']}{why}, the contract says {want}")
+    if want != "pass" and not answer.get("reason"):
+        return Check(case.name, False, f"a {want} must say why")
+    for bar in ("threshold", "fail_above"):
+        if bar in case.expect and answer.get(bar) != case.expect[bar]:
+            return Check(case.name, False, f"applied {bar} {answer.get(bar)}, the contract says {case.expect[bar]}")
+    return Check(case.name, True)
+
+
+def run_evals(provider: str, workdir: Path) -> EvalsReport:
+    """Every case of contract/evals/v1/cases.json against `provider`."""
+    checks = []
+    with StubJudge() as judge:
+        for case in evals_cases():
+            try:
+                root = build_evals_fixture(workdir, case)
+            except (KeyError, ValueError) as exc:
+                checks.append(Check(case.name, False, f"the contract's own data is broken: {exc}"))
+                continue
+            code, out = _ask_evals(provider, case, root, judge.url if case.judge == "up" else _closed_port_url())
+            if case.expect.get("answer") == "none":
+                answered = bool(out.strip())
+                checks.append(Check(case.name, not answered,
+                                    f"answered an unknown verb (exit {code})" if answered else ""))
+            else:
+                checks.append(_judge_scorecard(case, code, out))
+    return EvalsReport(provider, checks)

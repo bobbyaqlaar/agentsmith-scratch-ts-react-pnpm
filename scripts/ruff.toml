@@ -10,6 +10,7 @@ extend-exclude = [
   "delivery_evidence.py",
   "delivery_model.py",
   "eval_judge.py",
+  "evals_port.py",
   "gate_history.py",
   "gate_ides.py",
   "gate_kg.py",

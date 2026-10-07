@@ -1071,6 +1071,54 @@ def _cmd_rules(args: argparse.Namespace) -> int:
     return done.returncode
 
 
+def _cmd_evals_run(args: argparse.Namespace) -> int:
+    """`agentsmith evals run [--suite S]` — AgentSmith as an evals provider
+    (contract/evals/v1/protocol.md), answered by this installation's own
+    scripts. The request is stdin; `--suite` writes it for a person at a
+    terminal. Exit 0 whenever it answers: the verdict is in the scorecard."""
+    import subprocess as sp
+
+    scripts = _provider_scripts()
+    if scripts is None or not (scripts / "evals_port.py").is_file():
+        print("agentsmith evals: no evals_port.py in $AGENTSMITH_DIR or ~/.agent-framework — "
+              "run install-ai-stack.sh", file=sys.stderr)
+        return 3
+    request = sys.stdin.read() if not sys.stdin.isatty() else ""
+    if args.suite:
+        try:
+            body = json.loads(request) if request.strip() else {}
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            print("agentsmith evals: stdin is not a JSON request", file=sys.stderr)
+            return 2
+        request = json.dumps({**body, "suite": args.suite})
+    # stderr is the person's report and streams as the suite runs; stdout is the scorecard.
+    done = sp.run([sys.executable, str(scripts / "evals_port.py"), args.verb], input=request or "{}",
+                  stdout=sp.PIPE, text=True, check=False)
+    sys.stdout.write(done.stdout)
+    return done.returncode
+
+
+def _evals_conformance(args: argparse.Namespace) -> int:
+    """`agentsmith conformance --port evals --provider CMD` (contract/evals/v1/protocol.md)."""
+    import tempfile
+
+    from runtime import conformance as rc
+
+    if not args.provider:
+        print("agentsmith conformance --port evals: --provider COMMAND is required", file=sys.stderr)
+        return 2
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            report = rc.run_evals(args.provider, Path(tmp) / "fixture")
+        except FileNotFoundError as exc:
+            print(f"agentsmith: {exc}", file=sys.stderr)
+            return 2
+    print(report.render())
+    return 0 if report.passed else 1
+
+
 def _rules_conformance(args: argparse.Namespace) -> int:
     """`agentsmith conformance --port rules --provider CMD` (contract/rules/v1/protocol.md)."""
     import tempfile
@@ -1146,6 +1194,8 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
 
     if args.port == "record":
         return _record_conformance(args)
+    if args.port == "evals":
+        return _evals_conformance(args)
     if args.port == "rules":
         return _rules_conformance(args)
     if args.port == "telemetry":
@@ -1254,6 +1304,13 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
 
 
 def _cmd_evals(args: argparse.Namespace) -> int:
+    """`agentsmith evals` — sync HITL feedback from Phoenix, then run the
+    scorecard; `agentsmith evals run` — the evals contract's verb."""
+    if getattr(args, "verb", None) == "run":
+        return _cmd_evals_run(args)
+    if getattr(args, "suite", None):
+        print("agentsmith evals: --suite goes with run", file=sys.stderr)
+        return 2
     from runtime.machine import ops
 
     return ops.evals()
@@ -1467,9 +1524,9 @@ def build_parser() -> argparse.ArgumentParser:
     rules.set_defaults(func=_cmd_rules)
 
     conformance = sub.add_parser("conformance", help="does a command or a portal satisfy a contract?")
-    conformance.add_argument("--port", choices=("gate", "record", "rules", "telemetry"), default="gate",
-                             help="the contract: the gate or the rules (a provider command), the record "
-                                  "(a sender or a receiver), or telemetry (an emitter or an export)")
+    conformance.add_argument("--port", choices=("gate", "record", "rules", "telemetry", "evals"), default="gate",
+                             help="the contract: the gate, the rules or the evals (a provider command), the "
+                                  "record (a sender or a receiver), or telemetry (an emitter or an export)")
     conformance.add_argument("--export", metavar="FILE",
                              help="telemetry: an OTLP/JSON export to judge — one object, or one per line")
     conformance.add_argument("--emitter", metavar="COMMAND",
@@ -1520,9 +1577,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("action", choices=["start", "stop"])
     dashboard.set_defaults(func=_cmd_dashboard)
 
-    sub.add_parser("evals", help="sync HITL feedback from Phoenix, then run the eval scorecard").set_defaults(
-        func=_cmd_evals
-    )
+    evals = sub.add_parser("evals", help="sync HITL feedback from Phoenix, then run the eval scorecard; "
+                                         "`evals run` judges one suite (contract/evals/v1)")
+    evals.add_argument("verb", nargs="?", choices=("run",))
+    evals.add_argument("--suite", choices=("golden", "fairness", "hallucination", "adversarial", "rag_poison"),
+                       help="run: the suite to judge, when no request comes on stdin")
+    evals.set_defaults(func=_cmd_evals)
 
     promote = sub.add_parser("promote", help="promote a fix to the golden dataset and re-run evals")
     promote.add_argument("case_id")

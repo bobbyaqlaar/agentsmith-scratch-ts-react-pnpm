@@ -1,6 +1,8 @@
-# AgentSmith as a gate provider in CI (contract/gate/v2/protocol.md).
+# AgentSmith as a provider in CI: the gate (contract/gate/v2/protocol.md), the
+# rules and the evals — each port a tenant's providers.json declares as
+# `agentsmith <port>`.
 #
-# A tenant's gates workflow runs this at a pinned release —
+# A tenant's gates workflow — or its eval workflow — runs this at a pinned release —
 #   uses: bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith@v2.1.0
 # — and then asks `agentsmith gate ci` through its own launcher. Everything
 # comes from the repository at the action's own ref, which the runner has
@@ -8,7 +10,7 @@
 # AgentSmith out at a branch, and the tenant holds none of it
 # (.agent-rfc/designs/gate-contract-ci.md).
 name: "Set up AgentSmith (gate provider)"
-description: "Puts the `agentsmith` gate provider of this release on PATH, with the environment the gate runs in."
+description: "Puts the `agentsmith` provider of this release on PATH — gate, rules and evals — with the environment they run in."
 runs:
   using: composite
   steps:

@@ -1094,8 +1094,8 @@ CATALOGUE: tuple[Suite, ...] = (
             Mutation(
                 "the launcher reads every declaration as contract 1",
                 ".githooks/process-gate",
-                '  echo "${n:-1}"',
-                "  echo 1",
+                '    *) echo "$n" ;;',
+                "    *) echo 1 ;;",
             ),
             Mutation(
                 "a range the provider refused passes CI",
@@ -1249,6 +1249,30 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="launcher_declaration",
+        tests=("scripts/test/test_gate_contract_v3.py", "scripts/test/test_rules_contract.py"),
+        mutations=(
+            Mutation(
+                "a nested map is read as its parent's keys — a port's own contract leaks out",
+                ".githooks/process-gate",
+                '        if (c == "{") { d++; obj[d] = 1; key[d] = ""; got[d] = 0; i++; continue }',
+                '        if (c == "{") { if (d < 2) d++; obj[d] = 1; key[d] = ""; got[d] = 0; i++; continue }',
+            ),
+            Mutation(
+                "the top-level contract beats the gate entry's own",
+                ".githooks/process-gate",
+                '  n="$(decl_get providers.gate.contract)"\n  [ -n "$n" ] || n="$(decl_get contract)"',
+                '  n="$(decl_get contract)"\n  [ -n "$n" ] || n="$(decl_get providers.gate.contract)"',
+            ),
+            Mutation(
+                "a port declared none reads as its command",
+                ".githooks/process-gate",
+                '  if [ "$(decl_get "providers.$1")" = "none" ]; then',
+                '  if false; then',
+            ),
+        ),
+    ),
+    Suite(
         name="env_file_credentials",
         tests=("runtime/test/test_config.py", "scripts/test/test_env_file_credentials.py"),
         mutations=(
@@ -1348,6 +1372,12 @@ CATALOGUE: tuple[Suite, ...] = (
                 '        output = " — a judged case carries the output the application produced" if outputless else ""',
                 '        output = " — a judged case carries the output the application produced" '
                 'if suite in gm.JUDGED_SUITES else ""',
+            ),
+            Mutation(
+                "the provider's CI setup cannot reach a judge",
+                "scripts/requirements-gate.txt",
+                "\nhttpx>=0.25,<1.0",
+                "",
             ),
             Mutation(
                 "a warning declared for one suite excuses another",

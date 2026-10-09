@@ -13,3 +13,7 @@ opentelemetry-exporter-otlp-proto-http>=1.20,<2.0
 # The rules port (scripts/rules_port.py) reads the provider's catalogue,
 # templates/agent-rules.yaml — so the provider's CI setup needs a YAML reader.
 pyyaml>=6.0,<7.0
+# The evals port (scripts/evals_port.py) calls the judge a tenant's models.yaml
+# declares, and every direct-API route goes through httpx. Without it a judged
+# suite can only answer no_verdict — which a tenant may have declared a warning.
+httpx>=0.25,<1.0

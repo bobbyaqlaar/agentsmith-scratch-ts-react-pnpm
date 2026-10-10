@@ -1,23 +1,41 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from security.registry import ControlSpec
 from security.report import ControlResult
-from security.runners._shared import framework_root
+from security.runners._shared import (
+    declared_choice,
+    declared_value,
+    failed,
+    framework_root,
+    is_contract,
+    passed,
+    provider_code_in_scope,
+    repository_env,
+    repository_python,
+)
+
+MODES = ("off", "optional", "required")
+
+# The declared hook, called in the REPOSITORY's interpreter: a contract run never
+# imports the repository's code into the provider's process. The hook's own
+# policy decides what is unsafe, so only the contract is asserted — it answers,
+# with an `allowed`, and lets benign text through.
+_HOOK_SMOKE = """
+import importlib, json, sys
+module, _, name = sys.argv[1].partition(":")
+answer = getattr(importlib.import_module(module), name)("The weather forecast for tomorrow.")
+allowed = answer.get("allowed") if isinstance(answer, dict) else getattr(answer, "allowed", None)
+print(json.dumps({"allowed": allowed if isinstance(allowed, bool) else None}))
+"""
 
 
-def run(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
-    framework_root(ctx)   # sys.path side effect; return value unused
-
-    from runtime import moderation as mod
-
+def _api_smoke(mod) -> str:
+    """The provider's moderation API: '' when it behaves, else what did not."""
     mod.reset_output_moderator()
-    strict = bool(ctx.get("strict", False)) or os.environ.get("SECURITY_STRICT", "") == "1"
-    mode = os.environ.get("MODERATION_HOOK", "").strip().lower()
-
-    # API smoke: register classifier, allow clean, block unsafe.
     mod.register_output_moderator(
         lambda t: mod.ModerationResult(
             allowed="unsafe" not in t.lower(),
@@ -34,32 +52,81 @@ def run(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
             raised = True
     finally:
         mod.reset_output_moderator()
-
     if not ok.allowed or bad.allowed or not raised:
-        return ControlResult(
-            control_id=control.id,
-            status="fail",
-            message="moderator smoke failed",
-            evidence={},
-        )
-
-    # Prove required mode rejects a genuinely hook-less tenant.
-    # use_declared=False isolates this from any hook the tenant HAS declared —
-    # otherwise this assertion would fail for exactly the well-configured
-    # tenants it is meant to protect (G10).
-    rejected_missing_hook = False
+        return "moderator smoke failed"
     try:
         mod.apply_output_moderation("x", mode="required", use_declared=False)
     except mod.ModerationHookRequiredError:
-        rejected_missing_hook = True
+        return ""
+    return "required mode did not raise without hook"
 
-    if not rejected_missing_hook:
-        return ControlResult(
-            control_id=control.id,
-            status="fail",
-            message="required mode did not raise without hook",
-            evidence={},
-        )
+
+def _declared(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
+    """A contract run: the mode the repository DECLARES, and under `required`
+    the hook it declares, answering in its own interpreter."""
+    import json
+    import subprocess
+
+    if provider_code_in_scope(ctx):
+        from runtime import moderation as mod
+
+        broken = _api_smoke(mod)
+        if broken:
+            return failed(control, broken)
+    mode, problem = declared_choice(ctx, "moderation.mode", MODES)
+    if problem:
+        return failed(control, problem)
+    if mode is None:
+        return failed(control, "moderation.mode is not declared in .agenticframework/tenant.yaml — declare "
+                               "off, optional or required")
+    if mode != "required":
+        return passed(control, f"moderation.mode {mode!r} declared", mode=mode)
+    declared, _ = declared_value(ctx, "moderation.hook")
+    hook = str(declared or "").strip()
+    if ":" not in hook:
+        return failed(control, "moderation.mode is 'required' and moderation.hook names no module.path:callable",
+                      mode=mode)
+    root = Path(ctx["tenant_root"])
+    env = repository_env(Path(ctx["root"]))
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(root), env.get("PYTHONPATH")]))
+    try:
+        done = subprocess.run([repository_python(), "-c", _HOOK_SMOKE, hook], cwd=root, env=env,
+                              capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return failed(control, f"declared hook {hook} could not run: {exc}", mode=mode, hook=hook)
+    last = (done.stdout.strip().splitlines() or [""])[-1]
+    try:
+        allowed = json.loads(last).get("allowed") if done.returncode == 0 else None
+    except (ValueError, AttributeError):
+        allowed = None
+    if done.returncode != 0:
+        return failed(control, f"declared hook {hook} raised on benign text: {done.stderr.strip()[-300:]}",
+                      mode=mode, hook=hook)
+    if allowed is None:
+        return failed(control, f"declared hook {hook} did not answer with an `allowed`", mode=mode, hook=hook)
+    if not allowed:
+        return failed(control, f"declared hook {hook} blocked benign text — a classifier that blocks everything "
+                               "is not a passing control", mode=mode, hook=hook)
+    return passed(control, f"moderation.mode 'required'; declared hook {hook} answers", mode=mode, hook=hook)
+
+
+def run(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
+    framework_root(ctx)   # sys.path side effect; return value unused
+    if is_contract(ctx):
+        return _declared(control, ctx)
+
+    from runtime import moderation as mod
+
+    strict = bool(ctx.get("strict", False)) or os.environ.get("SECURITY_STRICT", "") == "1"
+    mode = os.environ.get("MODERATION_HOOK", "").strip().lower()
+
+    # API smoke: a classifier allows clean and blocks unsafe, and required mode
+    # rejects a genuinely hook-less tenant — use_declared=False isolates that
+    # from any hook the tenant HAS declared, or it would fail for exactly the
+    # well-configured tenants it is meant to protect (G10).
+    broken = _api_smoke(mod)
+    if broken:
+        return ControlResult(control_id=control.id, status="fail", message=broken, evidence={})
 
     # Tenant ownership:
     # - MODERATION_HOOK=required → the tenant must DECLARE a hook the harness

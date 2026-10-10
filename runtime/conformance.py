@@ -734,18 +734,14 @@ def run_telemetry_export(path: Path) -> TelemetryReport:
     return TelemetryReport(f"export: {path}", [_judge_agrees(), *verdict.checks], verdict.notes)
 
 
-_OTLP_DESTINATIONS = ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-                      "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "AGENT_PHOENIX_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS")
-
-
 def run_telemetry_emitter(command: str, timeout: int = 300) -> TelemetryReport:
     """Run `command` with its OTLP export pointed at a loopback receiver, and
     judge what arrived. Its own destinations are removed from its environment,
     so nothing it emits leaves this machine during the run."""
-    from runtime.telemetry_contract import Check, LoopbackCollector, judge
+    from runtime.telemetry_contract import OTLP_DESTINATIONS, Check, LoopbackCollector, judge
 
     with LoopbackCollector() as collector:
-        env = {k: v for k, v in os.environ.items() if k not in _OTLP_DESTINATIONS}
+        env = {k: v for k, v in os.environ.items() if k not in OTLP_DESTINATIONS}
         env.update({"OTEL_EXPORTER_OTLP_ENDPOINT": collector.endpoint, "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                     "OTEL_METRIC_EXPORT_INTERVAL": "1000"})
         try:
@@ -1063,3 +1059,172 @@ def run_evals(provider: str, workdir: Path) -> EvalsReport:
             else:
                 checks.append(_judge_scorecard(case, code, out))
     return EvalsReport(provider, checks)
+
+
+# ── The security contract (contract/security/v1/) ──────────────────────────
+#
+# A security provider checks a repository's own pack, posture and wire, and
+# answers with one row per control. The fixture is a tenant, never the
+# provider's own repository, so every row about the provider's own code must be
+# reported not applicable; and its emitter is the fixture's, posting OTLP/JSON
+# with the standard library, so no case depends on a provider's installation
+# (.agent-rfc/designs/security-contract.md).
+
+SECURITY_CONTRACT = 1
+# What a runner's own environment may carry that would decide a check for it.
+_SECURITY_JUNK_ENV = ("PROMPT_GUARD", "INPUT_GUARDRAIL", "MODERATION_HOOK", "MODERATION_HOOK_PATH",
+                      "TOOL_ALLOWLIST_STRICT", "TOOL_ALLOWLIST_PATH", "PROMPT_DENYLIST_PATH", "SECURITY_STRICT",
+                      "AGENTSMITH_TENANT_ROOT")
+
+
+def _security_dir() -> Path:
+    for root in (Path(os.environ["AGENTSMITH_DIR"]) if os.environ.get("AGENTSMITH_DIR") else None,
+                 Path(__file__).resolve().parent.parent, Path.home() / ".agent-framework"):
+        if root is not None and (root / "contract" / "security" / f"v{SECURITY_CONTRACT}" / "cases.json").is_file():
+            return root / "contract" / "security" / f"v{SECURITY_CONTRACT}"
+    raise FileNotFoundError(f"contract/security/v{SECURITY_CONTRACT}/ not found in $AGENTSMITH_DIR, beside this "
+                            "package, or ~/.agent-framework — re-run install-ai-stack.sh")
+
+
+class SecurityCase(BaseModel):
+    """One case from contract/security/v1/cases.json — data, validated on the way in."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    verb: str = Field(min_length=1)
+    request: dict = Field(default_factory=dict)
+    files: dict[str, Optional[str]] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+    expect: dict
+    why: str = ""
+
+
+@dataclass(frozen=True)
+class SecurityReport:
+    provider: str
+    checks: list[Check]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.checks) and all(c.ok for c in self.checks)
+
+    def render(self) -> str:
+        lines = [f"security contract v{SECURITY_CONTRACT} — provider: {self.provider}", ""]
+        lines += [f"  {'✅' if c.ok else '❌'} {c.name}" + (f" — {c.why}" if c.why else "") for c in self.checks]
+        kept = sum(1 for c in self.checks if c.ok)
+        lines += ["", f"{kept}/{len(self.checks)} cases" + ("" if self.passed else " — not conformant")]
+        return "\n".join(lines)
+
+
+def security_cases() -> list[SecurityCase]:
+    data = json.loads((_security_dir() / "cases.json").read_text(encoding="utf-8"))
+    return [SecurityCase.model_validate(case) for case in data["cases"]]
+
+
+def security_fixture() -> dict:
+    return json.loads((_security_dir() / "fixture.json").read_text(encoding="utf-8"))
+
+
+def contract_controls() -> list[str]:
+    """The repository controls every provider checks (controls.json)."""
+    data = json.loads((_security_dir() / "controls.json").read_text(encoding="utf-8"))
+    return [row["id"] for row in data["controls"]]
+
+
+def build_security_fixture(workdir: Path, case: SecurityCase) -> Path:
+    import shutil
+
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    files = {**security_fixture()["files"], **case.files}
+    for rel, text in files.items():
+        if text is None:
+            continue
+        (workdir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / rel).write_text(text, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "--template=", str(workdir)], check=True)
+    return workdir
+
+
+def _ask_security(provider: str, case: SecurityCase, root: Path) -> tuple[int, str]:
+    base = {k: v for k, v in os.environ.items() if k not in _SECURITY_JUNK_ENV}
+    request = {"cwd": str(root.resolve()), **case.request}
+    try:
+        done = subprocess.run([*shlex.split(provider), case.verb], cwd=root, input=json.dumps(request),
+                              capture_output=True, text=True, check=False, timeout=600, env={**base, **case.env})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, str(exc)
+    return done.returncode, done.stdout
+
+
+def _security_schema_problem(answer: object, name: str) -> Optional[str]:
+    import jsonschema
+
+    schema = json.loads((_security_dir() / name).read_text(encoding="utf-8"))
+    try:
+        jsonschema.validate(answer, schema)
+    except jsonschema.ValidationError as exc:
+        return f"{'/'.join(str(p) for p in exc.absolute_path) or '(root)'}: {exc.message[:200]}"
+    return None
+
+
+def _judge_security(case: SecurityCase, code: int, out: str) -> Check:
+    try:
+        answer = json.loads(out)
+    except ValueError:
+        return Check(case.name, False, f"no JSON answer (exit {code})")
+    if code != 0:
+        return Check(case.name, False, f"answered, but exited {code} — a provider that answers exits 0")
+    redaction = case.verb == "redaction"
+    problem = _security_schema_problem(answer, "redaction-result.schema.json" if redaction else "result.schema.json")
+    if problem:
+        return Check(case.name, False, f"not a result the schema allows — {problem}")
+    want = case.expect["verdict"]
+    if answer["verdict"] != want:
+        why = f" ({answer['reason']})" if answer.get("reason") else ""
+        return Check(case.name, False, f"answered {answer['verdict']}{why}, the contract says {want}")
+    if want != "pass" and not answer.get("reason"):
+        return Check(case.name, False, f"a {want} must say why")
+    if redaction:
+        if answer["environment"] != case.request.get("environment"):
+            return Check(case.name, False, f"answered for {answer['environment']}, asked about "
+                                           f"{case.request.get('environment')}")
+        if "leaked" in case.expect and sorted(answer.get("leaked") or []) != sorted(case.expect["leaked"]):
+            return Check(case.name, False, f"named {answer.get('leaked')} as leaked, the contract says "
+                                           f"{case.expect['leaked']}")
+        return Check(case.name, True)
+    if want == "not_gradable":
+        return Check(case.name, True)
+    rows = {row["id"]: row for row in answer["controls"]}
+    if not case.request.get("controls"):
+        missing = [cid for cid in contract_controls() if rows.get(cid, {}).get("subject") != "repository"]
+        if missing:
+            return Check(case.name, False, f"no repository row for {', '.join(missing[:5])}")
+    ran = [row["id"] for row in answer["controls"]
+           if row["subject"] == "provider" and row["result"] != "not_applicable"]
+    if ran:
+        return Check(case.name, False, f"ran the provider's own code for a tenant: {', '.join(ran[:5])}")
+    for cid, result in (case.expect.get("rows") or {}).items():
+        got = rows.get(cid, {}).get("result")
+        if got != result:
+            said = f" ({rows[cid].get('message', '')[:160]})" if cid in rows else ""
+            return Check(case.name, False, f"{cid} is {got or 'absent'}{said}, the contract says {result}")
+    if case.expect.get("only") and set(rows) != set(case.expect.get("rows") or {}):
+        return Check(case.name, False, f"answered {len(rows)} controls, asked about {len(case.expect['rows'])}")
+    return Check(case.name, True)
+
+
+def run_security(provider: str, workdir: Path) -> SecurityReport:
+    """Every case of contract/security/v1/cases.json against `provider`."""
+    checks = []
+    for case in security_cases():
+        root = build_security_fixture(workdir, case)
+        code, out = _ask_security(provider, case, root)
+        if case.expect.get("answer") == "none":
+            answered = bool(out.strip())
+            checks.append(Check(case.name, not answered, f"answered an unknown verb (exit {code})" if answered else ""))
+        else:
+            checks.append(_judge_security(case, code, out))
+    return SecurityReport(provider, checks)

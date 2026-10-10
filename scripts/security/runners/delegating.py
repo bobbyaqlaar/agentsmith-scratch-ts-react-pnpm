@@ -27,13 +27,18 @@ from typing import Any
 from security.registry import ControlSpec
 from security.report import ControlResult
 from security.runners._shared import (
+    contract_dataset_gradable,
+    contract_guard_suite,
     eval_suite_gateable,
     failed,
     framework_component_absent,
     guard_suite,
+    is_contract,
     node_suite,
     passed,
+    provider_code_in_scope,
     pytest_suite,
+    repository_python,
     tenant_security,
     verify_system,
 )
@@ -113,11 +118,38 @@ def change_gates(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
     `hooks/commit-msg` in throwaway repos. A vendored tenant has no `hooks/`,
     so without the guard every tenant failed this control on
     `bash: …/hooks/pre-commit: No such file` — a missing framework file, not a
-    tenant's change discipline."""
+    tenant's change discipline.
+
+    In a contract run for a tenant, the repository's own half: its changes are
+    governed by a gate provider it declares. AgentSmith's hooks are the
+    provider's code, checked in the provider's own repository."""
+    if not provider_code_in_scope(ctx):
+        return _gate_declared(control, ctx)
     absent = framework_component_absent(control, ctx, "hooks")
     if absent is not None:
         return absent
     return verify_system(control, ctx, "--check-hooks")
+
+
+def _gate_declared(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
+    import json
+
+    path = Path(ctx["tenant_root"]) / ".agenticframework" / "providers.json"
+    try:
+        declared = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return failed(control, "no .agenticframework/providers.json — no gate provider governs this "
+                               "repository's changes")
+    except (OSError, ValueError) as exc:
+        return failed(control, f".agenticframework/providers.json does not parse ({exc})")
+    gate = (declared.get("providers") or {}).get("gate") if isinstance(declared, dict) else None
+    if gate == "none":
+        return failed(control, 'providers.json declares `"gate": "none"` — this repository\'s changes are ungoverned')
+    if not isinstance(gate, dict) or not str(gate.get("command") or "").strip():
+        return failed(control, "providers.json names no gate provider — this repository's changes are ungoverned")
+    contract = gate.get("contract", declared.get("contract", 1))
+    return passed(control, f"changes are governed by `{gate['command']}`, gate contract {contract}",
+                  command=str(gate["command"]))
 
 
 def rbac_matrix(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
@@ -145,6 +177,8 @@ def rag_poison(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
     the document reached it. Those are different properties and only the first
     is deterministic, which is why this control gates on every commit.
     """
+    if is_contract(ctx):
+        return contract_guard_suite(control, ctx, "rag_poison")
     return guard_suite(control, ctx, "rag_poison", "score_rag_poison_case")
 
 
@@ -171,14 +205,20 @@ def audit_hmac(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
 
 
 def eval_golden(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
+    if is_contract(ctx):
+        return contract_dataset_gradable(control, ctx, "golden")
     return eval_suite_gateable(control, ctx, "golden")
 
 
 def eval_fairness(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
+    if is_contract(ctx):
+        return contract_dataset_gradable(control, ctx, "fairness")
     return eval_suite_gateable(control, ctx, "fairness")
 
 
 def eval_hallucination(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
+    if is_contract(ctx):
+        return contract_dataset_gradable(control, ctx, "hallucination")
     return eval_suite_gateable(control, ctx, "hallucination")
 
 
@@ -201,7 +241,8 @@ def tenant_suite(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
     """
     if not control.suite:
         return failed(control, "tenant control declares no `suite` to run")
-    return pytest_suite(control, ctx, control.suite, base=Path(ctx["tenant_root"]))
+    return pytest_suite(control, ctx, control.suite, base=Path(ctx["tenant_root"]),
+                        python=repository_python() if is_contract(ctx) else None)
 
 
 def agency_manifest(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
@@ -227,9 +268,20 @@ def agency_manifest(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
     except yaml.YAMLError as exc:
         return failed(control, f"agency manifest does not parse: {exc}")
 
-    actions = doc.get("actions") or []
+    actions = (doc.get("actions") or []) if isinstance(doc, dict) else []
     if not actions:
         return failed(control, "agency manifest declares no actions", path=str(path))
+    # The published shape (contract/security/v1/agency_manifest.schema.json): an
+    # action without its `needs_hitl`, or with a word for it, is not a declaration.
+    import gate_models as gm
+
+    try:
+        gm.AgencyManifest.model_validate(doc)
+    except gm.ValidationError as exc:
+        first = exc.errors()[0]
+        where = "/".join(str(p) for p in first["loc"]) or "(root)"
+        return failed(control, f"agency manifest does not match its schema at {where}: {first['msg']}",
+                      path=str(path))
 
     placeholders = [
         a for a in actions
@@ -282,7 +334,10 @@ def gateway_static(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
     and the moderation hook in one step — every gateway control at once — and
     it is invisible at runtime because the call simply succeeds.
     """
-    root = Path(ctx["root"])
+    # The repository's workload, not the install's: run from a checkout of the
+    # framework, `ctx["root"]` scanned AgentSmith's own directories and never the
+    # tenant's `agents/` (.agent-rfc/designs/security-contract.md).
+    root = Path(ctx["tenant_root"])
     offenders: list[str] = []
     for rel in _WORKLOAD_DIRS:
         base = root / rel

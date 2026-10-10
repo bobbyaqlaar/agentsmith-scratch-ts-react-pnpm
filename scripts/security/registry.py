@@ -9,6 +9,9 @@ from typing import Literal, Optional
 CheckType = Literal["unit", "integration", "eval", "artifact", "static", "live"]
 ControlStatus = Literal["met", "partial", "gap", "org-owned"]
 Owner = Literal["framework", "tenant", "shared"]
+# Whose evidence a control is (contract/security/v1): the repository being
+# checked, or the provider's own code — which a tenant's check does not run.
+Subject = Literal["repository", "provider"]
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,7 @@ class ControlSpec:
     # Tenant-declared test path, for controls whose evidence lives in the
     # tenant repo. Only the `tenant_suite` runner reads it.
     suite: Optional[str] = None
+    subject: Subject = "repository"
 
 
 def load_control_registry(
@@ -62,7 +66,8 @@ def load_control_registry(
                 f"{clashes}. Tenant registries are additive — a framework "
                 f"control cannot be weakened from the repo under review."
             )
-        raw = raw + tenant_raw
+        # A tenant's own control is evidence about the tenant, whatever its row says.
+        raw = raw + [{**row, "subject": "repository"} for row in tenant_raw]
     seen: set[str] = set()
     out: list[ControlSpec] = []
     for row in raw:
@@ -87,6 +92,7 @@ def load_control_registry(
                 check_type=row["check_type"],
                 mechanism=row["mechanism"],
                 suite=row.get("suite"),
+                subject=row.get("subject", "repository"),
             )
         )
     return out

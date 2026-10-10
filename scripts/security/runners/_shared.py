@@ -83,6 +83,7 @@ def pytest_suite(
     env: Optional[dict[str, str]] = None,
     select: Optional[str] = None,
     base: Optional[Path] = None,
+    python: Optional[str] = None,
 ) -> ControlResult:
     """Delegate to an existing test module.
 
@@ -99,7 +100,8 @@ def pytest_suite(
     tenant's posture and fails for reasons that have nothing to do with the
     control, turning a compliance check into an availability check. `env` lets
     a caller pin back whatever the suite genuinely needs; `select` passes a
-    `-k` expression.
+    `-k` expression; `python` is the interpreter — the repository's own, for a
+    suite of the repository's in a contract run.
     """
     root = base or Path(ctx["root"])
     target = root / rel_path
@@ -111,15 +113,16 @@ def pytest_suite(
             evidence={},
         )
     clean = {k: v for k, v in os.environ.items() if k not in _TENANT_RUNTIME_KEYS}
-    cmd = [sys.executable, "-m", "pytest", str(target), "-q"]
+    cmd = [python or sys.executable, "-m", "pytest", str(target), "-q"]
     if select:
         cmd += ["-k", select]
+    run_env = {**clean, "ENVIRONMENT": "staging", **(env or {})}
     proc = subprocess.run(
         cmd,
         cwd=root,
         capture_output=True,
         text=True,
-        env={**clean, "ENVIRONMENT": "staging", **(env or {})},
+        env=repository_env(Path(ctx["root"]), run_env) if python else run_env,
         check=False,
     )
     # pytest exit 2 = collection/usage error: the suite could not RUN (a
@@ -377,6 +380,141 @@ def security_fixture(
     if not cases:
         return None, failed(control, f"fixture {name} is empty — nothing probed")
     return cases, None
+
+
+# ── A contract run (contract/security/v1) ────────────────────────────────────
+#
+# `scripts/security_port.py` runs these runners for a repository that declares
+# AgentSmith its security provider. Two things differ from the harness run, and
+# both are read from the context so one runner serves both: the posture checked
+# is the repository's DECLARED one — never the environment of whoever runs the
+# check — and the provider's own code (its probe sets, its library) is checked
+# only in the provider's own repository (.agent-rfc/designs/security-contract.md).
+
+
+def is_contract(ctx: dict[str, Any]) -> bool:
+    return bool(ctx.get("contract"))
+
+
+def provider_code_in_scope(ctx: dict[str, Any]) -> bool:
+    """Whether the provider's own code is this run's to check: always in the
+    harness, and in a contract run only when the repository IS the provider."""
+    return not is_contract(ctx) or bool(ctx.get("own"))
+
+
+def declared_value(ctx: dict[str, Any], dotted: str) -> tuple[Any, str]:
+    """(value, problem) at a dotted path of the repository's `tenant.yaml` —
+    `(None, "")` when it declares nothing there."""
+    import yaml
+
+    path = Path(ctx["tenant_root"]) / ".agenticframework" / "tenant.yaml"
+    try:
+        node: Any = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, yaml.YAMLError) as exc:
+        return None, f".agenticframework/tenant.yaml does not parse ({exc})"
+    for part in dotted.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    return node, ""
+
+
+def declared_choice(
+    ctx: dict[str, Any], dotted: str, allowed: tuple[str, ...]
+) -> tuple[Optional[str], str]:
+    """(value, problem) for a word the repository declares in `tenant.yaml`.
+
+    `(None, "")` when it declares nothing. A YAML boolean is a problem, not a
+    word: a bare `off` parses as False, and reading that as "off" would turn a
+    control off by writing something that was never a valid value — the rule
+    `runtime.config.resolve_choice` keeps for the runtime."""
+    node, problem = declared_value(ctx, dotted)
+    if problem or node is None:
+        return None, problem
+    if isinstance(node, bool):
+        return None, (f"{dotted} is the YAML boolean {str(node).lower()}, not one of {', '.join(allowed)} "
+                      "— quote the word")
+    value = str(node).strip().lower()
+    if value not in allowed:
+        return None, f"{dotted}: {node!r} is not one of {', '.join(allowed)}"
+    return value, ""
+
+
+def _evals_port():
+    from _shared import load_script
+
+    return load_script("evals_port")
+
+
+def contract_dataset_gradable(control: ControlSpec, ctx: dict[str, Any], suite: str) -> ControlResult:
+    """A judged suite's dataset is the repository's and gradable under
+    contract/evals/v1 — enough cases, each with the output the application
+    produced. No judge is called: whether quality passes is the eval step's
+    answer, not this control's."""
+    path = load_run_evals(Path(ctx["root"]))._evals_path(suite)
+    if not path.is_file():
+        return not_applicable(control, f"no {suite} dataset in this repository", suite=suite)
+    port = _evals_port()
+    cases, why, _count = port.dataset(path, suite)
+    minimum = port.MIN_CASES.get(suite, 3)
+    if cases is not None and len(cases) < minimum:
+        cases, why = None, f"{suite}: {len(cases)} case(s), need at least {minimum} to gate"
+    if cases is None:
+        if _declared_not_gradable(ctx, suite):
+            # The repository already declared, in its reviewed providers.json,
+            # that this suite's `not_gradable` only warns: a tracked gap, shown.
+            return ControlResult(control_id=control.id, status="warn",
+                                 message=f"{DECLARED_GAP} in providers.json `evals.not_gradable` — {why}",
+                                 evidence={"suite": suite})
+        return failed(control, why)
+    return passed(control, f"{suite}: {len(cases)} cases, each with its output — gradable",
+                  cases=str(len(cases)))
+
+
+def _declared_not_gradable(ctx: dict[str, Any], suite: str) -> bool:
+    try:
+        declared = json.loads((Path(ctx["tenant_root"]) / ".agenticframework" / "providers.json").read_text(
+            encoding="utf-8"))
+        return declared["providers"]["evals"]["not_gradable"].get(suite) == "warn"
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def contract_guard_suite(control: ControlSpec, ctx: dict[str, Any], suite: str) -> ControlResult:
+    """A guard suite over the repository's own probes, judged as the evals
+    contract judges it — never the provider's base cases in its place."""
+    import gate_models as gm
+
+    if not load_run_evals(Path(ctx["root"]))._evals_path(suite).is_file():
+        return not_applicable(control, f"no {suite} dataset in this repository", suite=suite)
+    card = _evals_port().judge(Path(ctx["tenant_root"]), gm.EvalsRequest(suite=suite))
+    evidence = {"cases": str(card.cases_total)}
+    if card.fail_above is not None:
+        evidence["limit"] = f"{card.fail_above:.3f}"
+    if card.verdict == "pass":
+        return passed(control, f"{suite}: {card.reason}", **evidence)
+    return failed(control, f"{suite} {card.verdict.replace('_', ' ')}: {card.reason}", **evidence)
+
+
+def repository_env(install: Path, base: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """The environment for the repository's interpreter, without the provider's
+    own source on PYTHONPATH — the setup step puts it there for the provider, and
+    a repository's code must import the library version IT pins, not the one
+    answering the check."""
+    env = dict(os.environ if base is None else base)
+    kept = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p and Path(p).resolve() != install.resolve()]
+    if kept:
+        env["PYTHONPATH"] = os.pathsep.join(kept)
+    else:
+        env.pop("PYTHONPATH", None)
+    return env
+
+
+def repository_python() -> str:
+    """The repository's own interpreter — `python3` on PATH, the one its CI set
+    up with its dependencies. A contract run never imports the repository's code
+    into the provider's process."""
+    import shutil
+
+    return shutil.which("python3") or sys.executable
 
 
 def node_suite(

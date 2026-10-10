@@ -1100,6 +1100,57 @@ def _cmd_evals_run(args: argparse.Namespace) -> int:
     return done.returncode
 
 
+def _cmd_security(args: argparse.Namespace) -> int:
+    """`agentsmith security check|redaction` — AgentSmith as a security provider
+    (contract/security/v1/protocol.md), answered by this installation's own
+    scripts. The request is stdin; the flags write it for a person at a
+    terminal. Exit 0 whenever it answers: the verdict is in the result."""
+    import subprocess as sp
+
+    scripts = _provider_scripts()
+    if scripts is None or not (scripts / "security_port.py").is_file():
+        print("agentsmith security: no security_port.py in $AGENTSMITH_DIR or ~/.agent-framework — "
+              "run install-ai-stack.sh", file=sys.stderr)
+        return 3
+    request = sys.stdin.read() if not sys.stdin.isatty() else ""
+    flags = {"environment": args.environment, "emitter": args.emitter, "evidence_dir": args.evidence_dir,
+             "controls": args.control or None}
+    given = {key: value for key, value in flags.items() if value}
+    if given:
+        try:
+            body = json.loads(request) if request.strip() else {}
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            print("agentsmith security: stdin is not a JSON request", file=sys.stderr)
+            return 2
+        request = json.dumps({**body, **given})
+    # stderr is the person's report; stdout is the result.
+    done = sp.run([sys.executable, str(scripts / "security_port.py"), args.verb], input=request or "{}",
+                  stdout=sp.PIPE, text=True, check=False)
+    sys.stdout.write(done.stdout)
+    return done.returncode
+
+
+def _security_conformance(args: argparse.Namespace) -> int:
+    """`agentsmith conformance --port security --provider CMD` (contract/security/v1/protocol.md)."""
+    import tempfile
+
+    from runtime import conformance as rc
+
+    if not args.provider:
+        print("agentsmith conformance --port security: --provider COMMAND is required", file=sys.stderr)
+        return 2
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            report = rc.run_security(args.provider, Path(tmp) / "fixture")
+        except FileNotFoundError as exc:
+            print(f"agentsmith: {exc}", file=sys.stderr)
+            return 2
+    print(report.render())
+    return 0 if report.passed else 1
+
+
 def _evals_conformance(args: argparse.Namespace) -> int:
     """`agentsmith conformance --port evals --provider CMD` (contract/evals/v1/protocol.md)."""
     import tempfile
@@ -1196,6 +1247,8 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
         return _record_conformance(args)
     if args.port == "evals":
         return _evals_conformance(args)
+    if args.port == "security":
+        return _security_conformance(args)
     if args.port == "rules":
         return _rules_conformance(args)
     if args.port == "telemetry":
@@ -1524,8 +1577,9 @@ def build_parser() -> argparse.ArgumentParser:
     rules.set_defaults(func=_cmd_rules)
 
     conformance = sub.add_parser("conformance", help="does a command or a portal satisfy a contract?")
-    conformance.add_argument("--port", choices=("gate", "record", "rules", "telemetry", "evals"), default="gate",
-                             help="the contract: the gate, the rules or the evals (a provider command), the "
+    conformance.add_argument("--port", choices=("gate", "record", "rules", "telemetry", "evals", "security"),
+                             default="gate",
+                             help="the contract: the gate, the rules, the evals or security (a provider command), the "
                                   "record (a sender or a receiver), or telemetry (an emitter or an export)")
     conformance.add_argument("--export", metavar="FILE",
                              help="telemetry: an OTLP/JSON export to judge — one object, or one per line")
@@ -1583,6 +1637,18 @@ def build_parser() -> argparse.ArgumentParser:
     evals.add_argument("--suite", choices=("golden", "fairness", "hallucination", "adversarial", "rag_poison"),
                        help="run: the suite to judge, when no request comes on stdin")
     evals.set_defaults(func=_cmd_evals)
+
+    security = sub.add_parser("security", help="check this repository's security pack and posture, or what its "
+                                               "telemetry carries on the wire (contract/security/v1)")
+    security.add_argument("verb", choices=("check", "redaction"))
+    security.add_argument("--control", action="append", metavar="ID",
+                          help="check: only this control (repeatable)")
+    security.add_argument("--evidence-dir", metavar="DIR", help="check: write the evidence pack here")
+    security.add_argument("--environment", choices=("staging", "production"),
+                          help="redaction: the profile to check (required for redaction)")
+    security.add_argument("--emitter", metavar="COMMAND",
+                          help="redaction: the emitter to run, instead of the one providers.json declares")
+    security.set_defaults(func=_cmd_security)
 
     promote = sub.add_parser("promote", help="promote a fix to the golden dataset and re-run evals")
     promote.add_argument("case_id")

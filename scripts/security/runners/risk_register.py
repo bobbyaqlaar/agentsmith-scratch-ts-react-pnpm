@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import yaml
-from jsonschema import Draft202012Validator
 
+import gate_models as gm
 from security.registry import ControlSpec
 from security.report import ControlResult
-
-_SCHEMA_PATH = (
-    Path(__file__).resolve().parents[1] / "schemas" / "risk_register.schema.json"
-)
 
 
 def _resolve_path(ctx: dict[str, Any]) -> Path:
@@ -67,16 +62,17 @@ def run(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
             evidence={"path": str(path)},
         )
 
-    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
-    validator = Draft202012Validator(schema)
-    errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
-    if errors:
+    # The model is the published schema (contract/security/v1/risk_register.schema.json).
+    try:
+        gm.RiskRegister.model_validate(data)
+    except gm.ValidationError as exc:
+        errors = exc.errors()
         first = errors[0]
-        loc = "/".join(str(p) for p in first.path) or "(root)"
+        loc = "/".join(str(p) for p in first["loc"]) or "(root)"
         return ControlResult(
             control_id=control.id,
             status="fail",
-            message=f"schema invalid at {loc}: {first.message}",
+            message=f"schema invalid at {loc}: {first['msg']}",
             evidence={"path": str(path), "error_count": str(len(errors))},
         )
 

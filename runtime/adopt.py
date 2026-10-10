@@ -70,6 +70,11 @@ RULES_COMMAND = "agentsmith rules"
 RULES_CONTRACT = 1
 EVALS_COMMAND = "agentsmith evals"
 EVALS_CONTRACT = 1
+# The security port (contract/security/v1/protocol.md). Declared without an
+# `emitter`: which command exports the repository's telemetry — or `"none"` — is
+# the repository's to say, and until it does SEC-PII-002 says so.
+SECURITY_COMMAND = "agentsmith security"
+SECURITY_CONTRACT = 1
 
 SOURCE_EXTENSIONS = {
     "python-fastapi": (".py",),
@@ -470,7 +475,9 @@ def providers_declaration(command: str = "agentsmith gate", setup: Optional[str]
         "contract": GATE_CONTRACT,
         "providers": {"gate": {"command": command, "version": f"^{major}", "setup": setup or setup_reference()},
                       "rules": {"command": RULES_COMMAND, "version": f"^{major}", "contract": RULES_CONTRACT},
-                      "evals": {"command": EVALS_COMMAND, "version": f"^{major}", "contract": EVALS_CONTRACT}},
+                      "evals": {"command": EVALS_COMMAND, "version": f"^{major}", "contract": EVALS_CONTRACT},
+                      "security": {"command": SECURITY_COMMAND, "version": f"^{major}",
+                                   "contract": SECURITY_CONTRACT}},
     }, indent=2) + "\n"
 
 

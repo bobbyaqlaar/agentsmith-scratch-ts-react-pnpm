@@ -4,6 +4,7 @@
     "title": "PII pre-call scrub",
     "status": "partial",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM06"
@@ -28,6 +29,7 @@
     "title": "Trace redaction",
     "status": "met",
     "owner": "framework",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM06"
@@ -51,6 +53,7 @@
     "title": "HITL gate",
     "status": "met",
     "owner": "framework",
+    "subject": "provider",
     "frameworks": {
       "owasp": [
         "LLM08"
@@ -75,6 +78,7 @@
     "title": "HMAC audit log",
     "status": "met",
     "owner": "framework",
+    "subject": "provider",
     "frameworks": {
       "owasp": [],
       "nist": [
@@ -96,6 +100,7 @@
     "title": "Append-only audit log",
     "status": "gap",
     "owner": "framework",
+    "subject": "provider",
     "frameworks": {
       "owasp": [],
       "nist": [
@@ -117,6 +122,7 @@
     "title": "Portal RBAC",
     "status": "partial",
     "owner": "shared",
+    "subject": "provider",
     "frameworks": {
       "owasp": [],
       "nist": [
@@ -138,6 +144,7 @@
     "title": "Golden eval suite",
     "status": "met",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM09"
@@ -159,6 +166,7 @@
     "title": "Fairness eval suite",
     "status": "partial",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM09"
@@ -180,6 +188,7 @@
     "title": "Hallucination rate gate",
     "status": "met",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM09"
@@ -203,6 +212,7 @@
     "title": "LLM budget caps",
     "status": "met",
     "owner": "framework",
+    "subject": "provider",
     "frameworks": {
       "owasp": [
         "LLM04"
@@ -226,6 +236,7 @@
     "title": "Change management gates",
     "status": "met",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [],
       "nist": [
@@ -245,6 +256,7 @@
     "title": "Recoverable DLQ",
     "status": "met",
     "owner": "framework",
+    "subject": "provider",
     "frameworks": {
       "owasp": [
         "LLM02"
@@ -266,6 +278,7 @@
     "title": "Self-correction path",
     "status": "partial",
     "owner": "shared",
+    "subject": "provider",
     "frameworks": {
       "owasp": [
         "LLM02"
@@ -287,6 +300,7 @@
     "title": "LLM gateway choke point",
     "status": "partial",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM07"
@@ -310,6 +324,7 @@
     "title": "Prompt injection guard",
     "status": "met",
     "owner": "framework",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM01"
@@ -333,6 +348,7 @@
     "title": "Structured output validation",
     "status": "met",
     "owner": "shared",
+    "subject": "provider",
     "frameworks": {
       "owasp": [
         "LLM02"
@@ -354,6 +370,7 @@
     "title": "Tool allowlist",
     "status": "met",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM07"
@@ -377,6 +394,7 @@
     "title": "Output moderation hook",
     "status": "met",
     "owner": "tenant",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM01"
@@ -400,6 +418,7 @@
     "title": "Risk register artifact",
     "status": "org-owned",
     "owner": "tenant",
+    "subject": "repository",
     "frameworks": {
       "owasp": [],
       "nist": [
@@ -421,6 +440,7 @@
     "title": "Adversarial eval suite",
     "status": "met",
     "owner": "shared",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM01"
@@ -444,6 +464,7 @@
     "title": "SSO session revocation",
     "status": "met",
     "owner": "framework",
+    "subject": "provider",
     "frameworks": {
       "owasp": [],
       "nist": [
@@ -465,6 +486,7 @@
     "title": "Sovereign residency",
     "status": "met",
     "owner": "tenant",
+    "subject": "provider",
     "frameworks": {
       "owasp": [
         "LLM05"
@@ -486,6 +508,7 @@
     "title": "RAG poison-doc defense",
     "status": "met",
     "owner": "tenant",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM03"
@@ -509,6 +532,7 @@
     "title": "Agency / HITL manifest",
     "status": "partial",
     "owner": "tenant",
+    "subject": "repository",
     "frameworks": {
       "owasp": [
         "LLM08"

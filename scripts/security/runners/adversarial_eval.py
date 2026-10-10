@@ -13,8 +13,10 @@ from typing import Any
 
 from security.registry import ControlSpec
 from security.report import ControlResult
-from security.runners._shared import guard_suite
+from security.runners._shared import contract_guard_suite, guard_suite, is_contract
 
 
 def run(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
+    if is_contract(ctx):
+        return contract_guard_suite(control, ctx, "adversarial")
     return guard_suite(control, ctx, "adversarial", "score_adversarial_case")

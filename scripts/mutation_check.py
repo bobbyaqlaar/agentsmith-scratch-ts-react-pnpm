@@ -1388,6 +1388,78 @@ CATALOGUE: tuple[Suite, ...] = (
         ),
     ),
     Suite(
+        name="security_contract",
+        tests=("scripts/test/test_security_contract.py",),
+        mutations=(
+            Mutation(
+                "a row about the provider's own code is run for a tenant",
+                "scripts/security_port.py",
+                '    if control.subject == "provider" and not ctx["own"]:',
+                "    if False:",
+            ),
+            Mutation(
+                "the environment's posture beats the declared one",
+                "scripts/security/runners/prompt_guard.py",
+                '    mode, problem = declared_choice(ctx, "security.prompt_guard", MODES)',
+                '    mode, problem = __import__("runtime.prompt_guard", fromlist=["_"]).resolve_mode(), ""',
+            ),
+            Mutation(
+                "a probe that reached the wire passes",
+                "scripts/security/redaction.py",
+                "    if leaked:\n",
+                "    if False:\n",
+            ),
+            Mutation(
+                "a leak is reported by its text",
+                "scripts/security/redaction.py",
+                "    leaked = tuple(probe.kind for probe in PROBES if probe.core in wire)",
+                "    leaked = tuple(probe.core for probe in PROBES if probe.core in wire)",
+            ),
+            Mutation(
+                "a declared gap fails the verdict",
+                "scripts/security_port.py",
+                '    failed = [row.id for row in rows if row.result == "fail"]',
+                '    failed = [row.id for row in rows if row.result in ("fail", "gap")]',
+            ),
+            Mutation(
+                "a repository's registry may redefine a provider's control",
+                "scripts/security_port.py",
+                "    clashes = {row.id for row in rows} & theirs",
+                "    clashes: set[str] = set()",
+            ),
+            Mutation(
+                "the launcher passes a redaction that did not run",
+                ".githooks/process-gate",
+                '    if verdict == "not_applicable":',
+                '    if verdict in ("not_applicable", "not_gradable"):',
+            ),
+            Mutation(
+                "the gateway check scans the install, not the repository",
+                "scripts/security/runners/delegating.py",
+                '    root = Path(ctx["tenant_root"])\n    offenders: list[str] = []',
+                '    root = Path(ctx["root"])\n    offenders: list[str] = []',
+            ),
+            Mutation(
+                "the repository's code imports the provider's source",
+                "scripts/security/runners/_shared.py",
+                "if p and Path(p).resolve() != install.resolve()]",
+                "if p]",
+            ),
+            Mutation(
+                "a leak is excused by the emitter failing afterwards",
+                "scripts/security/redaction.py",
+                "    if leaked:\n        return Redaction(\"fail\"",
+                "    if leaked and not ran:\n        return Redaction(\"fail\"",
+            ),
+            Mutation(
+                "a repository's suite runs in the provider's interpreter",
+                "scripts/security/runners/delegating.py",
+                "                        python=repository_python() if is_contract(ctx) else None)",
+                "                        python=None)",
+            ),
+        ),
+    ),
+    Suite(
         name="record_contract",
         tests=("scripts/test/test_record_contract.py",),
         mutations=(

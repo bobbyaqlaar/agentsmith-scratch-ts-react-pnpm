@@ -78,6 +78,23 @@ def run(control: ControlSpec, ctx: dict[str, Any]) -> ControlResult:
             expected=str(allowlist_path),
         )
 
+    # The published shape first (contract/security/v1/tool_allowlist.schema.json):
+    # `load_allowlist` skips a row it cannot read, so a malformed one would be a
+    # tool quietly left off the list rather than a file that says it is wrong.
+    import yaml
+
+    import gate_models as gm
+
+    try:
+        gm.ToolAllowlist.model_validate(yaml.safe_load(allowlist_path.read_text(encoding="utf-8")) or {})
+    except yaml.YAMLError as exc:
+        return failed(control, f"tool allowlist does not parse: {exc}", allowlist=str(allowlist_path))
+    except gm.ValidationError as exc:
+        first = exc.errors()[0]
+        where = "/".join(str(p) for p in first["loc"]) or "(root)"
+        return failed(control, f"tool allowlist does not match its schema at {where}: {first['msg']}",
+                      allowlist=str(allowlist_path))
+
     allowed = load_allowlist(allowlist_path)
     registered = _registered_tool_names(allowlist_path.parents[2])
 

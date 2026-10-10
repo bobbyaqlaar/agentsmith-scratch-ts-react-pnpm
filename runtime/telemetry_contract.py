@@ -32,6 +32,10 @@ CONTRACT_ATTRIBUTE = "governance.telemetry.contract"
 # the receiver reads bodies it did not write.
 MAX_BODY_BYTES = 8_000_000
 MAX_TOTAL_BYTES = 64_000_000
+# An emitter's own destinations and the collector credential, removed from its
+# environment for a loopback run so nothing it emits leaves the machine.
+OTLP_DESTINATIONS = ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                     "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "AGENT_PHOENIX_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS")
 
 Where = Literal["resource", "span", "span_name", "event", "metric", "metric_attribute"]
 ValueType = Literal["string", "int", "double", "number", "bool", "string[]"]

@@ -25,10 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 __all__ = [
     "RECORD_LIMITS",
+    "AgencyManifest",
     "Allowance",
     "Approval",
     "Artifact",
     "Artifacts",
+    "ControlRow",
     "Decision",
     "DecisionV2",
     "DevRecord",
@@ -49,7 +51,10 @@ __all__ = [
     "PillarPolicy",
     "RecordCommit",
     "Records",
+    "RedactionRequest",
+    "RedactionResult",
     "Registry",
+    "RiskRegister",
     "RulesCheck",
     "RulesFile",
     "RulesFileState",
@@ -57,7 +62,12 @@ __all__ = [
     "RulesRender",
     "RulesRequest",
     "Scorecard",
+    "SecurityPort",
+    "SecurityRequest",
+    "SecurityResult",
     "Signoff",
+    "TenantControl",
+    "ToolAllowlist",
     "ValidationError",
     "check_approvals",
     "check_evidence",
@@ -511,6 +521,176 @@ class EvalsPort(_Frozen):
                      Literal["warn"]] = Field(default_factory=dict)
     not_gradable: dict[Literal["golden", "fairness", "hallucination", "adversarial", "rag_poison"],
                        Literal["warn"]] = Field(default_factory=dict)
+
+
+# ── The security a provider checks for a tenant (contract/security/v1/) ──────
+#
+# The tenant owns its security pack and its declared posture; the provider
+# checks them and answers with one row per control, each saying whose evidence
+# it is. The pack files are the tenant's, so they validate here rather than in
+# whichever runner reads them (.agent-rfc/designs/security-contract.md).
+
+SECURITY_SUBJECTS = ("repository", "provider")
+SECURITY_RESULTS = ("pass", "fail", "gap", "not_applicable")
+SECURITY_VERDICTS = ("pass", "fail", "not_gradable")
+REDACTION_VERDICTS = ("pass", "fail", "not_gradable", "not_applicable")
+# SEC-<AREA>-NNN, where a tenant's area may have parts (SEC-KYC-FLOOR-001).
+CONTROL_ID = r"^SEC-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}$"
+
+
+class ControlFrameworks(_Frozen):
+    owasp: list[str] = Field(default_factory=list)
+    nist: list[str] = Field(default_factory=list)
+    atlas: list[str] = Field(default_factory=list)
+    iso42001: list[int] = Field(default_factory=list)
+
+
+class TenantControl(BaseModel):
+    """One row of a tenant's `.agent-rfc/security/control_registry.json` — a
+    control the tenant adds, evidenced by a suite in its own repository. Only
+    adds: an id the provider already checks is refused where the rows are read."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(pattern=CONTROL_ID)
+    title: str = Field(min_length=1)
+    status: Literal["met", "partial", "gap", "org-owned"]
+    owner: Literal["framework", "tenant", "shared"] = "tenant"
+    frameworks: ControlFrameworks = Field(default_factory=ControlFrameworks)
+    suite: str | None = Field(default=None, min_length=1)
+    mechanism: str = ""
+
+    @model_validator(mode="after")
+    def _evidenced(self) -> "TenantControl":
+        if self.status in ("met", "partial") and not self.suite:
+            raise ValueError(f"{self.id} claims {self.status!r} and names no `suite` that evidences it")
+        return self
+
+
+class RiskEntry(_Frozen):
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    severity: Literal["low", "medium", "high", "critical"]
+    mitigations: list[str]
+    control_ids: list[Annotated[str, Field(pattern=CONTROL_ID)]]
+
+
+class RiskRegister(_Frozen):
+    """`.agent-rfc/security/risk_register.yaml`."""
+
+    version: int | None = Field(default=None, ge=1)
+    entries: list[RiskEntry] = Field(min_length=1)
+
+
+class AgencyAction(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    workflow: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    needs_hitl: bool
+    notes: str | None = None
+
+
+class AgencyManifest(BaseModel):
+    """`.agent-rfc/security/agency_manifest.yaml` — which actions need a human."""
+
+    model_config = ConfigDict(extra="allow")
+
+    version: int | None = Field(default=None, ge=1)
+    actions: list[AgencyAction] = Field(min_length=1)
+
+
+class AllowedTool(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=1)
+    allowed: bool = True
+
+
+class ToolAllowlist(BaseModel):
+    """`.agent-rfc/security/tool_allowlist.yaml` — an empty list denies every tool."""
+
+    model_config = ConfigDict(extra="allow")
+
+    tools: list[AllowedTool] = Field(default_factory=list)
+
+
+class SecurityRequest(BaseModel):
+    """What a caller sends `check` on stdin. Unknown keys are ignored."""
+
+    model_config = ConfigDict(extra="allow")
+
+    controls: list[Annotated[str, Field(pattern=CONTROL_ID)]] | None = None
+    evidence_dir: str | None = Field(default=None, min_length=1)
+    cwd: str | None = None
+
+
+class ProviderName(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+
+
+class ControlRow(BaseModel):
+    """One control in a `check` result."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(pattern=CONTROL_ID)
+    title: str = ""
+    subject: Literal["repository", "provider"]
+    result: Literal["pass", "fail", "gap", "not_applicable"]
+    message: str = ""
+    frameworks: ControlFrameworks = Field(default_factory=ControlFrameworks)
+    evidence: dict[str, str] = Field(default_factory=dict)
+
+
+class SecurityResult(BaseModel):
+    """A provider's answer to `check`. A provider adds keys of its own."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    schema_version: Literal[1] = Field(default=1, alias="schema")
+    verdict: Literal["pass", "fail", "not_gradable"]
+    reason: str = ""
+    provider: ProviderName
+    controls: list[ControlRow] = Field(default_factory=list)
+    counts: dict[Literal["pass", "fail", "gap", "not_applicable"], int] = Field(default_factory=dict)
+
+
+class RedactionRequest(BaseModel):
+    """What a caller sends `redaction` on stdin. Unknown keys are ignored."""
+
+    model_config = ConfigDict(extra="allow")
+
+    environment: Literal["staging", "production"]
+    emitter: str | None = Field(default=None, min_length=1)
+    cwd: str | None = None
+
+
+class RedactionResult(BaseModel):
+    """A provider's answer to `redaction`: whether a probe reached the wire. A
+    leak is named by the probe's kind, never its text."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    schema_version: Literal[1] = Field(default=1, alias="schema")
+    verdict: Literal["pass", "fail", "not_gradable", "not_applicable"]
+    reason: str = ""
+    environment: Literal["staging", "production"]
+    leaked: list[str] = Field(default_factory=list)
+
+
+class SecurityPort(_Frozen):
+    """`providers.security` in .agenticframework/providers.json. `emitter` is the
+    command that exports one representative run of the repository's telemetry —
+    `"none"` when it emits none."""
+
+    command: str = Field(min_length=1)
+    version: str | None = None
+    contract: Literal[1] | None = None
+    emitter: str | None = Field(default=None, min_length=1)
 
 
 class Ide(_Frozen):

@@ -1,0 +1,123 @@
+# Tenant-scoped CD — applies to THIS repository only.
+# tenant.id: scratch-ts-react-pnpm
+# Do not reference org-level shared secrets beyond this tenant's GitHub Environment.
+
+name: "CD: Production Deploy"
+
+# Runs after CI succeeds on a push to main (after a reviewed develop → main promotion PR merges).
+# Eval fail gate (below 0.80) + smoke test. No continue-on-error. Smoke failure
+# fails the job and invokes the platform rollback hook.
+
+# GATED ON CI. This used to be `on: push`, running in PARALLEL with CI with
+# nothing making it wait: AqlaarTeleologyStudio's "CD: Production Deploy"
+# went green on commits whose CI failed (a no-op only because DEPLOY_COMMAND was
+# unset — set it, and a red commit ships). Now it runs when the stack's CI
+# workflow COMPLETES for a push to main, and the job proceeds only if that run
+# succeeded, deploying exactly the commit CI validated (head_sha), not whatever
+# main points at by the time this starts.
+#
+# `workflows:` names all three stack CIs; a tenant has one, and GitHub ignores
+# names that match no workflow. Renaming your CI workflow's `name:` silently
+# disconnects this — keep them in step.
+on:
+  workflow_run:
+    workflows: ["CI: Python/FastAPI Guardrails", "CI: TypeScript/React Guardrails", "CI: Go Guardrails"]
+    types: [completed]
+    branches: ["main"]
+
+concurrency:
+  group: cd-production-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false   # Never cancel in-flight deploys
+
+jobs:
+  deploy:
+    name: "Deploy to Production"
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      # Read: nothing here pushes. The step that opened a PR with promoted
+      # HITL feedback went with the Phoenix sync (contract/ops/v1 slice) —
+      # promoting feedback into a dataset is an evals-data feature, not a deploy.
+      contents: read
+      packages: write   # only used if a Dockerfile is present — see build-push-ghcr
+
+    env:
+      ENVIRONMENT: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      # The provider (contract/security/v1, contract/evals/v1) for the redaction
+      # and smoke steps below, installed by its own CI setup step at the release
+      # this repository pins. First, before anything else sets up Python.
+      - uses: "bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith@67929c8d73b873f4755933d59fbb03a4217d4913"
+
+      # ── GCP auth (optional — skips when neither WIF nor SA key is configured) ─
+      # Must run before build-push-ghcr when pushing to Artifact Registry, and
+      # before the deploy step when using gcloud/kubectl. Sets ADC on the runner
+      # so any subsequent step calling google.auth.default() is authenticated.
+      # See docs/UserManual.md › Deploy via GitHub CI/CD (GCP deployment specifics) for one-time setup instructions.
+      - name: "Authenticate to GCP"
+        uses: "bobbyaqlaar/AgentSmith/.github/actions/gcp-auth@67929c8d73b873f4755933d59fbb03a4217d4913"
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # ── Containerize + push to GHCR (optional — skips if no Dockerfile) ────
+      # ⚠️  Cloud Run deployments: Cloud Run rejects GHCR images. You must
+      # re-push to Artifact Registry before deploying. See
+      # .github/workflows/cd-portal.yml for the complete AR re-push + digest
+      # promotion pattern used by the AgentSmith Ops Portal.
+      - name: "Build & push container image"
+        id: image
+        uses: "bobbyaqlaar/AgentSmith/.github/actions/build-push-ghcr@67929c8d73b873f4755933d59fbb03a4217d4913"
+
+      # ── Deploy to production. Set the DEPLOY_COMMAND secret on this
+      # tenant's GitHub Environment to wire in your platform — no workflow
+      # YAML edit needed. Unset = no-op placeholder (docs/UserManual.md "Wire
+      # your platform").
+      - name: "Deploy to production"
+        uses: "bobbyaqlaar/AgentSmith/.github/actions/deploy-placeholder@67929c8d73b873f4755933d59fbb03a4217d4913"
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        with:
+          deploy_command: ${{ secrets.DEPLOY_COMMAND }}
+          environment_label: production
+
+      # ── Redaction compliance — production profile must scrub + truncate ────
+      # Asks the declared security provider whether its planted probes reach this
+      # repository's own telemetry wire under the production profile; with no emitter
+      # declared it answers not applicable and says so.
+      - name: "Trace redaction compliance check"
+        run: bash .githooks/process-gate security redaction --environment production
+
+      # ── Post-deploy eval smoke test — BLOCKS on failure, no continue-on-error
+      - name: "Post-deploy eval smoke test"
+        env:
+          # Whichever key the judge role names, passed through by name.
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY:           ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
+          AGENT_OWNER_ID:         ${{ secrets.AGENT_OWNER_ID || 'cd@agenticframework' }}
+        run: bash .githooks/process-gate evals run --suite golden --fail-below 0.80
+        # No continue-on-error — failure must block or trigger rollback
+
+      - name: "Rollback on smoke failure"
+        if: failure()
+        uses: "bobbyaqlaar/AgentSmith/.github/actions/rollback-notify@67929c8d73b873f4755933d59fbb03a4217d4913"
+        with:
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          teams_webhook_url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          rollback_command: ${{ secrets.ROLLBACK_COMMAND }}
+          environment_label: production
+          failure_context: "Post-deploy eval smoke test failed below 0.80"

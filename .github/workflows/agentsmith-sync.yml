@@ -1,0 +1,103 @@
+# AgentSmith sync — written by `agentsmith tenant adopt`, refreshed by
+# `agentsmith sync` (AgentSmith .agent-rfc/designs/sync-pull-request.md).
+#
+# A tenant only learns it is behind when somebody thinks to check, which is the
+# failure the gates exist to remove — and what goes stale here is the gate
+# wiring itself. This runs weekly, brings the repository up to the framework's
+# latest release, and opens a PULL REQUEST. It never pushes to the default
+# branch: a person merges, and this repository's own gates judge the result.
+#
+# It needs, in Settings → Actions → General, "Allow GitHub Actions to create
+# and approve pull requests". AGENTSMITH_READ_TOKEN — the same secret the gates
+# workflow uses — is required only while the provider is private; against a
+# public one the run's own token reads the release and the checkout.
+name: "AgentSmith sync"
+
+"on":
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: "Propose the framework's latest release"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Which release is current?"
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.AGENTSMITH_READ_TOKEN || github.token }}
+        run: |
+          tag="$(gh api repos/bobbyaqlaar/AgentSmith/releases/latest --jq .tag_name)"
+          if [ -z "$tag" ]; then
+            echo "::error::could not read AgentSmith's latest release — if the provider is private, set AGENTSMITH_READ_TOKEN with Contents: read"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: bobbyaqlaar/AgentSmith
+          ref: ${{ steps.release.outputs.tag }}
+          token: ${{ secrets.AGENTSMITH_READ_TOKEN || github.token }}
+          path: .agentsmith-framework
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r .agentsmith-framework/scripts/requirements-gate.txt pyyaml
+
+      - name: "Sync what the framework owns here"
+        env:
+          AGENTSMITH_DIR: ${{ github.workspace }}/.agentsmith-framework
+          PYTHONPATH: ${{ github.workspace }}/.agentsmith-framework
+        # -P: `python -m` otherwise puts the working directory — this tenant —
+        # first on the path, and a vendored tenant's own `runtime/` would answer.
+        run: python3 -P -m runtime.cli sync --yes
+
+      - name: "Nothing to sync, or open the proposal"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          # `sync` writes only what the framework owns, so a clean tree means
+          # this repository is already current. That is an ending, not a failure.
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "nothing to sync: already current with AgentSmith $TAG"
+            exit 0
+          fi
+          git config user.name "agentsmith-sync"
+          git config user.email "agentsmith-sync@users.noreply.github.com"
+          # One branch, so a second run updates the open proposal rather than
+          # adding another: a repository that ignores this for a month has one
+          # pull request to decide about, not four.
+          git checkout -B agentsmith/sync
+          git add -A
+          git commit -m "chore(framework): sync AgentSmith $TAG" \
+                     -m "Design: .agent-rfc/designs/adoption.md" \
+                     -m "Review: n/a: framework sync $TAG"
+          git push --force-with-lease origin HEAD:refs/heads/agentsmith/sync
+          body="$(printf '%s\n' \
+            "\`agentsmith sync\` brought this repository up to AgentSmith **$TAG**." \
+            "" \
+            "Only files the framework owns are changed — the gate hooks, the IDE hook wiring, the" \
+            "rules block, the provider declaration and these workflows. Anything edited here since" \
+            "the framework wrote it was left alone, so this PR is safe to read quickly:" \
+            "" \
+            "- the gate accepts its review by HASH, not by inspection: every file matches" \
+            "  \`.agenticframework/scaffold.json\`;" \
+            "- this repository's own gates run over this PR like any other change." \
+            "" \
+            "Merging is a person's decision. Closing it is an answer too — the next run will offer again.")"
+          if ! gh pr edit agentsmith/sync --title "Sync AgentSmith $TAG" --body "$body" 2>/dev/null; then
+            gh pr create --base "${GITHUB_REF_NAME}" --head agentsmith/sync \
+                         --title "Sync AgentSmith $TAG" --body "$body" \
+              || echo "::error::could not open the pull request — allow Actions to create pull requests in Settings → Actions → General"
+          fi

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# bash .githooks/chain <hook> [args] — run the hook this repository ran before
+# AgentSmith armed .githooks (AgentSmith docs/process-gates.md).
+# Copied verbatim into every repo that adopts the process gates.
+#
+# core.hooksPath names one directory, so arming .githooks switched off whatever
+# ran before: husky, pre-commit, or the machine's own post-checkout (which is
+# why `tenant init` repositories were never vendored). `agentsmith tenant init`
+# and `tenant adopt` record that directory in `agentsmith.chainHooksPath`; the
+# gate's hooks call this after the gate passes, and a one-line stub calls it for
+# every other hook the directory has. Unset — AgentSmith itself — it does
+# nothing.
+#
+# The prior hook gets the same arguments and stdin, and its status is the
+# hook's status: a failing lint still blocks the commit. Callers run it with
+# `bash`, so it works whether or not a copy kept its executable bit.
+set -uo pipefail
+
+hook="${1:?usage: chain <hook> [args]}"
+shift
+dir="$(git config --get agentsmith.chainHooksPath 2>/dev/null || true)"
+[ -n "$dir" ] || exit 0
+root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+case "$dir" in
+  /*) ;;
+  *) dir="$root/$dir" ;;
+esac
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Never itself: a chain that pointed back here would call this script forever.
+[ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] || exit 0
+[ -x "$dir/$hook" ] || exit 0
+exec "$dir/$hook" "$@"

@@ -1,0 +1,31 @@
+name: Security (declared provider)
+
+# This repository's security is checked by the security provider
+# .agenticframework/providers.json declares (contract/security/v1), installed by
+# the provider's own CI setup step at a pinned release and asked through the
+# launcher: a row per control for this repository's own security pack
+# (.agent-rfc/security/), the posture .agenticframework/tenant.yaml declares —
+# never this job's environment — and its telemetry wire through the emitter the
+# security port declares. Controls that test the provider's own code are the
+# provider's CI's, not run here. Only a pass passes; there is no non-strict
+# mode. The evidence pack is uploaded either way.
+
+on:
+  workflow_call:
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: "bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith@6fafbd03a0871835f2a24b7b7b580066f2335545"
+      - name: "Security: the declared provider (contract/security/v1)"
+        run: bash .githooks/process-gate security check --evidence-dir security-evidence
+      - name: "Upload security evidence"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-evidence
+          path: security-evidence/
+          if-no-files-found: ignore

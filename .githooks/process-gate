@@ -1,0 +1,621 @@
+#!/usr/bin/env bash
+# .githooks/process-gate <subcommand> [args] — ask this repository's gate.
+#
+# The one launcher every caller uses — the Claude Code hooks in
+# .claude/settings.json and .githooks/commit-msg — in AgentSmith and in every
+# tenant, copied verbatim (docs/process-gates.md).
+#
+# For the three contract events (session-start, pre-edit, stop) it asks, in
+# order: $GOVERNANCE_PROVIDER, the `gate` command this repository declares in
+# .agenticframework/providers.json, then the paths below. A provider that exits
+# 3, 126 or 127 cannot run here, and the next step is tried
+# (contract/gate/v1/protocol.md).
+#
+# `ci` goes to the declared provider when the repository speaks gate contract 2,
+# and `commit-msg` and `sweep` — the commit and push events — at contract 3; none
+# of them then falls back: no decision refuses (contract/gate/v3/protocol.md).
+#
+# Everything else — and any event no provider answered — runs AgentSmith's own
+# script, looked up in this order:
+#
+#   1. <repo>/scripts/process_gate.py      AgentSmith's own checkout only — never a tenant's copy
+#   2. $AGENTSMITH_DIR/scripts/            a framework checkout (installed-mode CI)
+#   3. ~/.agent-framework/scripts/         a machine install (installed-mode tenants, locally)
+#
+# and runs it with the first interpreter that can: $AGENTSMITH_PYTHON,
+# $AGENTSMITH_DIR/.venv, ~/.agent-framework/.venv, then the repo's own .venv.
+#
+# `rules check` asks the `rules` provider the repository declares
+# (contract/rules/v1/protocol.md) and never falls back: declared and silent
+# fails; not declared, or "none", passes and says so. `evals run --suite S
+# [--fail-below X]` asks the `evals` provider the same way (contract/evals/v1/protocol.md) and
+# fails on anything but a pass, unless providers.json lets that verdict warn.
+# `security check` and `security redaction --environment E` ask the `security`
+# provider (contract/security/v1/protocol.md) and fail on anything but a pass.
+#
+# When none exists the gate cannot run, and each caller fails the safe way:
+# pre-edit denies the edit, commit-msg blocks the commit, ci fails; the
+# advisory session-start and stop only warn.
+set -uo pipefail
+
+subcommand="${1:-}"
+# The repository this was invoked in — git's view first. CLAUDE_PROJECT_DIR is
+# only a fallback: it names the SESSION's project, which is not the repo being
+# committed to when a session in one repo commits in another.
+root="$(git rev-parse --show-toplevel 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$PWD}")"
+
+# ── The repository's declared gate provider (contract/gate/v1/protocol.md) ────
+# A repository says who governs it in .agenticframework/providers.json, so its
+# hooks name a provider rather than this framework's paths
+# (.agent-rfc/designs/provider-resolution.md). Read with sed because this runs
+# before any interpreter is known to exist. Only the three contract events go to
+# a provider; commit-msg, sweep and ci are not in contract v1 and keep the
+# resolution below.
+# The scalar at a dotted path in the declaration (`contract`,
+# `providers.gate.command`), or nothing — read by its nesting, with POSIX awk,
+# because this runs before any interpreter is known to exist. A text match on
+# `"contract"` or `"command"` misread a port carrying maps of its own
+# (.agent-rfc/designs/launcher-reads-declaration.md).
+decl_get() {
+  local file="$root/.agenticframework/providers.json"
+  [ -f "$file" ] || return 0
+  tr '\n\r\t' '   ' < "$file" | awk -v want="$1" '
+    function emit(v,   p, k) {
+      p = ""
+      for (k = 1; k <= d; k++) p = p (k > 1 ? "." : "") key[k]
+      if (p == want) { print v; done = 1 }
+    }
+    {
+      s = $0; n = length(s); d = 0; i = 1
+      while (i <= n && !done) {
+        c = substr(s, i, 1)
+        if (c == "{") { d++; obj[d] = 1; key[d] = ""; got[d] = 0; i++; continue }
+        if (c == "[") { d++; obj[d] = 0; key[d] = 0; i++; continue }
+        if (c == "}" || c == "]") { d--; i++; continue }
+        if (c == ",") { if (obj[d]) got[d] = 0; else key[d]++; i++; continue }
+        if (c == ":") { got[d] = 1; i++; continue }
+        if (c == "\"") {
+          j = i + 1; str = ""
+          while (j <= n) {
+            ch = substr(s, j, 1)
+            if (ch == "\\") { str = str substr(s, j + 1, 1); j += 2; continue }
+            if (ch == "\"") break
+            str = str ch; j++
+          }
+          i = j + 1
+          if (obj[d] && !got[d]) key[d] = str; else emit(str)
+          continue
+        }
+        if (c ~ /[-0-9a-z]/) {
+          j = i
+          while (j <= n && substr(s, j, 1) ~ /[-+0-9.eEa-z]/) j++
+          emit(substr(s, i, j - i)); i = j; continue
+        }
+        i++
+      }
+    }'
+}
+
+declared_port() {
+  # A port's value ($1: gate, rules, evals, security): either "none" or an object with a "command".
+  if [ "$(decl_get "providers.$1")" = "none" ]; then
+    echo "none"
+  else
+    decl_get "providers.$1.command"
+  fi
+}
+
+declared_gate() { declared_port gate; }
+
+# The gate contract this repository speaks: the `gate` entry's own "contract",
+# else the declaration's top-level one, else 1. Read by path, so another port's
+# own "contract" — or its maps — is never mistaken for the declaration's.
+declared_contract() {
+  local n
+  n="$(decl_get providers.gate.contract)"
+  [ -n "$n" ] || n="$(decl_get contract)"
+  case "$n" in
+    ''|*[!0-9]*) echo 1 ;;
+    *) echo "$n" ;;
+  esac
+}
+
+# `ci --base B --head H` at contract 2: one range event to the declared
+# provider, its decision printed for a person (report, annotations, the step
+# summary), and its verdict as the exit code. Every way of getting no decision
+# fails the check and says which it was.
+ci_by_contract() {
+  local base="" head="HEAD" provider answer code
+  shift  # the subcommand
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base) base="${2:-}"; shift 2 ;;
+      --head) head="${2:-HEAD}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  # A ref is put into JSON by hand here, so only characters a ref can hold.
+  for ref in "$base" "$head"; do
+    case "$ref" in
+      *[!A-Za-z0-9._/~^@{}-]*)
+        say_error ci "not a git ref: $ref"
+        return 1 ;;
+    esac
+  done
+  ask_provider ci "$(printf '{"kind":"range","base":"%s","head":"%s"}' "$base" "$head")" ci
+}
+
+# `commit-msg [--amend] FILE` and `sweep [--report]` at contract 3: the commit
+# and push events (contract/gate/v3/protocol.md). `sweep --report` is what
+# pre-commit runs; at contract 3 it asks nothing, because `commit` runs the same
+# sweep with the message and decides. No policy lives here — the subject rule is
+# the provider's.
+local_by_contract() {
+  local amend=false file="" payload
+  case "$1" in
+    sweep)
+      shift
+      case " $* " in *" --report "*) return 0 ;; esac
+      ask_provider push '{"kind":"push"}' local ;;
+    commit-msg)
+      shift
+      for arg in "$@"; do
+        case "$arg" in --amend) amend=true ;; *) file="$arg" ;; esac
+      done
+      if [ ! -f "$file" ]; then
+        say_error local "commit-msg was given no message file"
+        return 1
+      fi
+      need_python local || return 1
+      # The message is data: encoded by an interpreter, never spliced into JSON by hand.
+      payload="$(GATE_AMEND="$amend" python3 -c '
+import json, os, sys
+print(json.dumps({"kind": "commit", "message": open(sys.argv[1], encoding="utf-8").read(),
+                  "amend": os.environ["GATE_AMEND"] == "true"}))
+' "$file")" || return 1
+      ask_provider commit "$payload" local ;;
+  esac
+}
+
+# Where a failure is said: CI gets an annotation; a hook speaks to the person
+# at the terminal.
+say_error() {
+  if [ "$1" = "ci" ]; then
+    echo "::error title=Process gate::$2"
+  else
+    echo "❌ process gate: $2" >&2
+  fi
+}
+
+need_python() {
+  command -v python3 >/dev/null 2>&1 && return 0
+  say_error "$1" "python3 is needed to talk to the gate provider, and is not on PATH"
+  return 1
+}
+
+# One event to the declared provider, and its decision as the exit code.
+# $1 the event, $2 its JSON, $3 `ci` or `local`, $4 the port (default gate). No
+# decision, in any form, refuses — and says which form it took; nothing falls
+# back to a framework path. The provider runs at the top of the repository.
+ask_provider() {
+  local event="$1" payload="$2" where="$3" port="${4:-gate}" provider answer code
+  if [ "$port" = "gate" ]; then
+    provider="${GOVERNANCE_PROVIDER:-$(declared_port gate)}"
+  else
+    provider="$(declared_port "$port")"
+  fi
+  if [ "$provider" = "none" ]; then
+    echo "Process gates: this repository declares itself ungoverned (providers.json) — nothing checked."
+    return 0
+  fi
+  if [ -z "$provider" ]; then
+    say_error "$where" "providers.json declares gate contract $(declared_contract) but names no gate command"
+    return 1
+  fi
+  need_python "$where" || return 1
+  answer="$(cd "$root" && printf '%s' "$payload" | $provider "$event")"
+  code=$?
+  printf '%s' "$answer" | GATE_EXIT="$code" GATE_EVENT="$event" GATE_WHERE="$where" GATE_PORT="$port" \
+    GATE_CONTRACT="$(declared_contract)" python3 -c '
+import json, os, sys
+raw, code, event = sys.stdin.read(), os.environ["GATE_EXIT"], os.environ["GATE_EVENT"]
+port = os.environ["GATE_PORT"]
+in_ci = os.environ["GATE_WHERE"] == "ci"
+refused = {"ci": "fails the check", "commit": "blocks the commit", "push": "blocks the push",
+           "check": "fails the check"}[event]
+title = "Process gate" if port == "gate" else "Rules"
+
+def fail(text):
+    if in_ci:
+        print("::error title=" + title + "::" + text)
+    else:
+        print("❌ " + title.lower() + ": " + text, file=sys.stderr)
+    sys.exit(1)
+
+try:
+    answer = json.loads(raw)
+    decision = answer["decision"]
+except (ValueError, KeyError, TypeError):
+    # Exit 2 is a usage error: an installed provider older than the contract this
+    # repository declares does not know the event — the case that happens when a
+    # tenant moves ahead of the install on a machine.
+    why = {"2": f"it does not know `{event}` (exit 2) — it is older than the {port} contract this repository "
+                "declares; update it (for AgentSmith: re-run install-ai-stack.sh)",
+           "3": "it cannot run here (exit 3)", "126": "it is not executable (exit 126)",
+           "127": "it is not installed (exit 127)"}.get(code, f"it printed no decision (exit {code})")
+    contract = os.environ["GATE_CONTRACT"]
+    under = f"Under gate contract {contract} that" if port == "gate" else "That"
+    fail(f"the declared {port} provider gave no decision for `{event}`: {why}. {under} {refused}; "
+         "nothing falls back to a framework path.")
+report = answer.get("report") or ""
+if report:
+    print(report)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if in_ci and summary:
+        with open(summary, "a", encoding="utf-8") as fh:
+            fh.write(report + "\n")
+if in_ci:
+    for line in answer.get("annotations") or []:
+        print(line)
+if decision == "allow":
+    sys.exit(0)
+fail(answer.get("text") or "refused, with no reason given")
+'
+}
+
+provider=""
+case "$subcommand" in
+  session-start|pre-edit|stop)
+    provider="${GOVERNANCE_PROVIDER:-$(declared_gate)}"
+    if [ "$provider" = "none" ]; then
+      # Declared ungoverned: not the same as "no provider could run", so this
+      # never falls through to the framework's own gate.
+      exit 0
+    fi
+    if [ -n "$provider" ]; then
+      payload="$(cat)"
+      answer="$(printf '%s' "$payload" | $provider "$@")"
+      code=$?
+      # An answer is a decision on stdout. A provider that printed none did not
+      # answer — exit 3 ("cannot run here"), 126/127 (not executable, not
+      # there), or a version too old to know this event, which is how an
+      # installed provider behaves the day the contract grows. Each falls
+      # through to the framework's own gate, which is what makes naming a
+      # provider safe rather than a migration (contract/gate/v1/protocol.md).
+      if [ -n "$answer" ]; then
+        printf '%s\n' "$answer"
+        exit "$code"
+      fi
+      # The payload is already drained; replay it below.
+      replayed="$payload"
+    fi
+    ;;
+  ci)
+    # Gate contract 2 (contract/gate/v2/protocol.md): CI asks the declared
+    # provider, and NEVER falls back — a check that could not run is not a check
+    # that passed, and the fallback below is the framework path contract 2
+    # exists to remove (.agent-rfc/designs/gate-contract-ci.md). At contract 1,
+    # or with no declaration, nothing here applies and `ci` runs as it always has.
+    if [ "$(declared_contract)" -ge 2 ]; then
+      ci_by_contract "$@"
+      exit $?
+    fi
+    ;;
+  commit-msg|sweep)
+    # Gate contract 3: the commit and push events go to the declared provider,
+    # and never fall back (contract/gate/v3/protocol.md). Below 3, nothing here
+    # applies and the framework's own script runs, as it always has.
+    if [ "$(declared_contract)" -ge 3 ]; then
+      local_by_contract "$@"
+      exit $?
+    fi
+    ;;
+  declared-contract)
+    # For the hooks: commit-msg applies the subject rule itself only below 3.
+    declared_contract
+    exit 0
+    ;;
+  kg)
+    # The gate's knowledge-graph check (contract/gate/v3/protocol.md, `kg
+    # check`): is the committed graph what the code maps to now. Asked of the
+    # declared gate provider and never falls back; no provider declared, or
+    # "none", passes and says so.
+    if [ "${2:-}" != "check" ]; then
+      echo "usage: process-gate kg check" >&2
+      exit 2
+    fi
+    provider="$(declared_gate)"
+    case "$provider" in
+      "")
+        echo "Knowledge Graph: this repository declares no gate provider (providers.json) — nothing checked."
+        exit 0 ;;
+      none)
+        echo "Knowledge Graph: this repository declares \"gate\": \"none\" (providers.json) — nothing checked."
+        exit 0 ;;
+    esac
+    (cd "$root" && $provider kg check)
+    code=$?
+    case "$code" in
+      0|1) exit "$code" ;;
+      *)
+        echo "❌ Knowledge Graph: the declared gate provider could not check the graph (exit $code) — it may be older than \`kg check\`; update it (for AgentSmith: re-run install-ai-stack.sh)." >&2
+        exit 1 ;;
+    esac
+    ;;
+  rules)
+    # The rules port (contract/rules/v1/protocol.md): only `check` is asked
+    # from here — a render is placed by the provider tooling, not by a hook.
+    if [ "${2:-}" != "check" ]; then
+      echo "usage: process-gate rules check" >&2
+      exit 2
+    fi
+    where=local
+    [ -n "${GITHUB_ACTIONS:-}" ] && where=ci
+    case "$(declared_port rules)" in
+      "")
+        echo "Rules: this repository declares no rules provider (providers.json) — nothing checked."
+        exit 0 ;;
+      none)
+        echo "Rules: this repository declares \"rules\": \"none\" (providers.json) — nothing checked."
+        exit 0 ;;
+    esac
+    ask_provider check '{}' "$where" rules
+    exit $?
+    ;;
+  evals)
+    # The evals port (contract/evals/v1/protocol.md): `run --suite S` asks the
+    # declared provider and maps its scorecard to the step. Only `pass` passes;
+    # `fail` and no answer fail; `no_verdict` and `not_gradable` fail too, unless
+    # providers.json names that suite under them as "warn". Never falls back.
+    suite="${4:-}"
+    if [ "${2:-}" != "run" ] || [ "${3:-}" != "--suite" ]; then
+      suite=""
+    fi
+    case "$suite" in
+      golden|fairness|hallucination|adversarial|rag_poison) ;;
+      *)
+        echo "usage: process-gate evals run --suite golden|fairness|hallucination|adversarial|rag_poison [--fail-below 0..1]" >&2
+        exit 2 ;;
+    esac
+    # `--fail-below X`: the request's own floor (contract/evals/v1, `fail_below`),
+    # ahead of the tenant's declaration — a CD smoke holds staging and production
+    # to different bars. A number in [0, 1], or the step is refused.
+    request="$(printf '{"suite":"%s"}' "$suite")"
+    if [ $# -gt 4 ]; then
+      if [ "${5:-}" != "--fail-below" ] || [ $# -ne 6 ] \
+         || ! printf '%s' "${6:-}" | grep -Eq '^(0(\.[0-9]+)?|1(\.0+)?|\.[0-9]+)$'; then
+        echo "usage: process-gate evals run --suite $suite [--fail-below 0..1] — got: ${*:5}" >&2
+        exit 2
+      fi
+      request="$(printf '{"suite":"%s","fail_below":%s}' "$suite" "$(printf '%s' "$6" | sed 's/^\./0./')")"
+    fi
+    where=local
+    [ -n "${GITHUB_ACTIONS:-}" ] && where=ci
+    provider="$(declared_port evals)"
+    case "$provider" in
+      "")
+        echo "Evals: this repository declares no evals provider (providers.json) — nothing judged."
+        exit 0 ;;
+      none)
+        echo "Evals: this repository declares \"evals\": \"none\" (providers.json) — nothing judged."
+        exit 0 ;;
+    esac
+    need_python "$where" || exit 1
+    # The provider's report for a person goes to stderr and streams; stdout is the scorecard.
+    answer="$(cd "$root" && printf '%s' "$request" | $provider run)"
+    code=$?
+    printf '%s' "$answer" | EVALS_EXIT="$code" EVALS_SUITE="$suite" EVALS_WHERE="$where" EVALS_ROOT="$root" python3 -c '
+import json, os, sys
+raw, code, suite = sys.stdin.read(), os.environ["EVALS_EXIT"], os.environ["EVALS_SUITE"]
+in_ci = os.environ["EVALS_WHERE"] == "ci"
+title = "Evals (" + suite + ")"
+
+def say(level, text):
+    # The reason quotes the tenant dataset (case ids, paths): one line, so no
+    # part of it can start a workflow command of its own.
+    text = " ".join(text.split())
+    if in_ci:
+        print("::" + level + " title=" + title + "::" + text)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a", encoding="utf-8") as fh:
+                fh.write("**" + title + "** — " + text + "\n")
+    else:
+        print(("❌ " if level == "error" else "⚠️  ") + title + ": " + text, file=sys.stderr)
+
+def fail(text):
+    say("error", text)
+    sys.exit(1)
+
+try:
+    card = json.loads(raw)
+    verdict, reason = card["verdict"], card.get("reason") or ""
+except (ValueError, KeyError, TypeError):
+    why = {"2": "it does not know `run` (exit 2) — it is older than the evals contract; update it "
+                "(for AgentSmith: re-run install-ai-stack.sh)",
+           "3": "it cannot run here (exit 3)", "126": "it is not executable (exit 126)",
+           "127": "it is not installed (exit 127)"}.get(code, "it printed no scorecard (exit " + code + ")")
+    fail("the declared evals provider gave no scorecard: " + why + ". That fails the step; nothing falls back "
+         "to a framework path.")
+if card.get("suite") != suite:
+    fail("the provider answered about " + str(card.get("suite")) + ", not " + suite)
+if verdict == "pass":
+    print(title + ": pass — " + (reason or "every bar cleared"))
+    sys.exit(0)
+if verdict == "fail":
+    fail("fail — " + (reason or "a bar was missed"))
+if verdict not in ("no_verdict", "not_gradable"):
+    fail("the provider answered " + repr(verdict) + ", which is no verdict this contract names")
+try:
+    with open(os.path.join(os.environ["EVALS_ROOT"], ".agenticframework", "providers.json"), encoding="utf-8") as fh:
+        port = json.load(fh)["providers"]["evals"]
+    declared = port.get(verdict, {}).get(suite) if isinstance(port, dict) else None
+except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    declared = None
+if declared == "warn":
+    say("warning", verdict + " — " + reason + ". This suite proves nothing on this commit; providers.json "
+        "declares that " + verdict + " only warns for " + suite + ".")
+    sys.exit(0)
+fail(verdict + " — " + reason + ". A suite that was not judged is not a pass; to let it warn instead, "
+     "declare \"" + verdict + "\": {\"" + suite + "\": \"warn\"} under providers.evals.")
+'
+    exit $?
+    ;;
+  security)
+    # The security port (contract/security/v1/protocol.md): `check` asks the
+    # declared provider about the repository's pack and posture; `redaction
+    # --environment E` about what its telemetry carries on the wire. Only `pass`
+    # passes — and a redaction the repository declares nothing to check for.
+    # There is no declared warning: nothing a check reads is a quota. Never falls back.
+    verb="${2:-}" evidence=""
+    case "$verb:${3:-}:${4:-}" in
+      check::) request='{}' ;;
+      check:--evidence-dir:?*) request="" evidence="$4" ;;
+      redaction:--environment:staging|redaction:--environment:production) request="{\"environment\":\"$4\"}" ;;
+      *)
+        echo "usage: process-gate security check [--evidence-dir DIR] | security redaction --environment staging|production" >&2
+        exit 2 ;;
+    esac
+    where=local
+    [ -n "${GITHUB_ACTIONS:-}" ] && where=ci
+    provider="$(declared_port security)"
+    case "$provider" in
+      "")
+        echo "Security: this repository declares no security provider (providers.json) — nothing checked."
+        exit 0 ;;
+      none)
+        echo "Security: this repository declares \"security\": \"none\" (providers.json) — nothing checked."
+        exit 0 ;;
+    esac
+    need_python "$where" || exit 1
+    if [ -n "$evidence" ]; then
+      request="$(SECURITY_DIR="$evidence" python3 -c '
+import json, os
+print(json.dumps({"evidence_dir": os.environ["SECURITY_DIR"]}))
+')"
+    fi
+    # The provider's report for a person goes to stderr; stdout is the result.
+    answer="$(cd "$root" && printf '%s' "$request" | $provider "$verb")"
+    code=$?
+    printf '%s' "$answer" | SECURITY_EXIT="$code" SECURITY_VERB="$verb" SECURITY_WHERE="$where" python3 -c '
+import json, os, sys
+raw, code, verb = sys.stdin.read(), os.environ["SECURITY_EXIT"], os.environ["SECURITY_VERB"]
+in_ci = os.environ["SECURITY_WHERE"] == "ci"
+title = "Security (" + verb + ")"
+
+def say(level, text, name=title):
+    # Messages quote the repository (paths, ids, hook names): one line, so no
+    # part of one can start a workflow command of its own.
+    text = " ".join(str(text).split())
+    if in_ci:
+        print("::" + level + " title=" + name + "::" + text)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a", encoding="utf-8") as fh:
+                fh.write("**" + name + "** — " + text + "\n")
+    else:
+        print(("❌ " if level == "error" else "⚠️  ") + name + ": " + text, file=sys.stderr)
+
+def fail(text):
+    say("error", text)
+    sys.exit(1)
+
+try:
+    result = json.loads(raw)
+    verdict, reason = result["verdict"], result.get("reason") or ""
+except (ValueError, KeyError, TypeError):
+    why = {"2": "it does not know `" + verb + "` (exit 2) — it is older than the security contract; update it "
+                "(for AgentSmith: re-run install-ai-stack.sh)",
+           "3": "it cannot run here (exit 3)", "126": "it is not executable (exit 126)",
+           "127": "it is not installed (exit 127)"}.get(code, "it printed no result (exit " + code + ")")
+    fail("the declared security provider gave no result: " + why + ". That fails the step; nothing falls back "
+         "to a framework path.")
+if verb == "redaction":
+    if verdict == "pass":
+        print(title + ": pass — " + (reason or "no probe reached the wire"))
+        sys.exit(0)
+    if verdict == "not_applicable":
+        print(title + ": not applicable — " + reason)
+        sys.exit(0)
+    if verdict in ("fail", "not_gradable"):
+        fail(verdict.replace("_", " ") + " — " + reason)
+    fail("the provider answered " + repr(verdict) + ", which is no verdict this contract names")
+rows = result.get("controls") or []
+for row in rows:
+    if not isinstance(row, dict):
+        continue
+    name = "Security " + str(row.get("id"))
+    if row.get("result") == "fail":
+        say("error", row.get("message") or "failed", name)
+    elif row.get("result") == "gap":
+        say("warning", row.get("message") or "a declared gap", name)
+mine = [r for r in rows if isinstance(r, dict) and r.get("subject") == "repository"]
+held = sum(1 for r in mine if r.get("result") == "pass")
+if verdict == "pass":
+    print(title + ": pass — " + str(held) + " of " + str(len(mine)) + " repository controls held; the rest are "
+          "declared gaps or not applicable here")
+    sys.exit(0)
+if verdict in ("fail", "not_gradable"):
+    fail(verdict.replace("_", " ") + " — " + reason)
+fail("the provider answered " + repr(verdict) + ", which is no verdict this contract names")
+'
+    exit $?
+    ;;
+esac
+
+gate=""
+# The repository's own scripts/ only when it IS AgentSmith — two of its markers,
+# as runtime/cli.py looks_like_framework asks. A tenant's copy of the gate is
+# never run: 3.0.0 retired vendoring (.agent-rfc/designs/vendoring-retired.md).
+own=""
+if [ -f "$root/install-ai-stack.sh" ] && [ -d "$root/workflow-templates" ]; then
+  own="$root/scripts"
+fi
+for dir in "$own" "${AGENTSMITH_DIR:+$AGENTSMITH_DIR/scripts}" "$HOME/.agent-framework/scripts"; do
+  if [ -n "$dir" ] && [ -f "$dir/process_gate.py" ]; then
+    gate="$dir/process_gate.py"
+    break
+  fi
+done
+
+# The interpreter: the gate needs the framework environment (Python 3.11+ with
+# pydantic and opentelemetry — pillars 3 and 7 hold for the gate itself). The
+# gate exits 3 when an interpreter cannot run it, and the next one is tried; a
+# hook's stdin is read once and replayed to each attempt.
+why=""
+if [ -z "$gate" ]; then
+  why="scripts/process_gate.py not found in \$AGENTSMITH_DIR or ~/.agent-framework — set AGENTSMITH_DIR to an AgentSmith checkout, or re-run its install-ai-stack.sh"
+else
+  case "$subcommand" in
+    # `replayed` is set when a declared provider already drained stdin and then
+    # said it could not run here.
+    session-start|pre-edit|stop) payload="${replayed-$(cat)}" ;;
+    *) payload="" ;;
+  esac
+  tried=""
+  for py in "${AGENTSMITH_PYTHON:-}" "${AGENTSMITH_DIR:+$AGENTSMITH_DIR/.venv/bin/python}" \
+            "$HOME/.agent-framework/.venv/bin/python" "$root/.venv/bin/python"; do
+    [ -n "$py" ] && [ -x "$py" ] || continue
+    case " $tried " in *" $py "*) continue ;; esac
+    tried="$tried $py"
+    if [ -n "$payload" ]; then
+      printf '%s' "$payload" | "$py" "$gate" "$@"
+    else
+      "$py" "$gate" "$@" </dev/null
+    fi
+    code=$?
+    [ "$code" -eq 3 ] || exit "$code"
+  done
+  why="no interpreter could run $gate (tried:${tried:- none}) — it needs Python 3.11+ with pydantic and opentelemetry: run AgentSmith's install-ai-stack.sh, or set AGENTSMITH_PYTHON"
+fi
+case "$subcommand" in
+  pre-edit)
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"The process gate could not run: %s. Edits are denied until it can."}}\n' "$why"
+    exit 0 ;;
+  session-start|stop)
+    echo "⚠️  process gate did not run: $why" >&2
+    exit 0 ;;
+  *)
+    echo "❌ process gate could not run: $why" >&2
+    exit 1 ;;
+esac

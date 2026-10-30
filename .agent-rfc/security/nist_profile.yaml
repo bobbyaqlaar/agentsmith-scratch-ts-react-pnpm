@@ -1,0 +1,22 @@
+# NIST AI RMF profile mapping (optional).
+# Copy to .agent-rfc/security/nist_profile.yaml
+version: 1
+organization: "REPLACE_ME"
+functions:
+  GOVERN:
+    roles:
+      - name: AI system owner
+        control_ids: [SEC-RBAC-001, SEC-AUDIT-001]
+  MAP:
+    roles:
+      - name: Risk owner
+        control_ids: [SEC-RISK-001, SEC-AGENCY-001]
+  MEASURE:
+    roles:
+      - name: Eval owner
+        control_ids: [SEC-EVAL-001, SEC-EVAL-003]
+  MANAGE:
+    roles:
+      - name: Ops owner
+        control_ids: [SEC-HITL-001, SEC-DLQ-001, SEC-BUDGET-001]
+evidence_artifacts: []

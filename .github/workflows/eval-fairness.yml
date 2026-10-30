@@ -1,0 +1,52 @@
+name: "Fairness eval scorecard (reusable, opt-in)"
+
+# Opt-in bias/fairness gate (UAE Decree-Law 34/2023 / ISO theme 8).
+# - FAIRNESS_EVALS=required (repo variable) or inputs.fairness_mode=required
+#   → a failed suite fails the job; unset / warn → continue-on-error.
+#
+# The suite is judged by the evals provider .agenticframework/providers.json
+# declares (contract/evals/v1), installed by the provider's own CI setup step at
+# a pinned release and asked through the launcher, which maps its scorecard to
+# this step: only a pass passes; a fail or no answer fails, and `no_verdict` /
+# `not_gradable` fail unless providers.json declares them a warning for this
+# suite. The bars are the request's, else the repository's declaration
+# (`extends.evals` in process-gates.json), else the provider's defaults.
+
+on:
+  workflow_call:
+    inputs:
+      fairness_mode:
+        description: "warn (default) or required"
+        type: string
+        required: false
+        default: "warn"
+
+jobs:
+  eval-fairness:
+    name: "Fairness eval scorecard"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: ${{ inputs.fairness_mode != 'required' && vars.FAIRNESS_EVALS != 'required' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: "bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith@64862bc02b1eb704098ff8e77fc8986ecde7f1ae"
+
+      - name: "Judge the fairness suite (declared evals provider)"
+        env:
+          # Whichever key the judge role names, passed through by name.
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY:           ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
+          AGENT_OWNER_ID:         ${{ secrets.AGENT_OWNER_ID || 'ci@agenticframework' }}
+        run: bash .githooks/process-gate evals run --suite fairness
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fairness-eval-results-${{ github.run_id }}
+          path: .agent-rfc/fixtures/*eval_results.json
+          if-no-files-found: ignore

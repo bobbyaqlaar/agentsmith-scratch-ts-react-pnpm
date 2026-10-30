@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "bash .githooks/process-gate session-start --ide cursor"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "bash .githooks/process-gate pre-edit --ide cursor",
+        "matcher": "Write",
+        "failClosed": true,
+        "timeout": 30
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "bash .githooks/process-gate pre-edit --ide cursor",
+        "failClosed": true,
+        "timeout": 30
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash .githooks/process-gate stop --ide cursor",
+        "timeout": 60
+      }
+    ]
+  }
+}

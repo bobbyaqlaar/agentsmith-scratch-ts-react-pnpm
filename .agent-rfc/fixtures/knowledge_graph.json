@@ -1,0 +1,211 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "node_type": "CodebaseFile",
+      "language": "typescript",
+      "symbols": [],
+      "last_modified": "2026-10-30T08:27:59Z",
+      "id": "vite.config.ts"
+    },
+    {
+      "node_type": "CodebaseFile",
+      "language": "typescript",
+      "symbols": [],
+      "last_modified": "2026-10-30T08:27:59Z",
+      "id": "src/main.tsx"
+    },
+    {
+      "node_type": "CodebaseFile",
+      "language": "typescript",
+      "symbols": [],
+      "last_modified": "2026-10-30T08:27:59Z",
+      "id": "src/App.tsx"
+    },
+    {
+      "node_type": "CodebaseFile",
+      "language": "typescript",
+      "symbols": [
+        "sum"
+      ],
+      "last_modified": "2026-10-30T08:27:59Z",
+      "id": "src/lib/sum.ts"
+    },
+    {
+      "node_type": "CodebaseFile",
+      "language": "typescript",
+      "symbols": [],
+      "last_modified": "2026-10-30T08:27:59Z",
+      "id": "src/lib/sum.test.ts"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "REQUIREMENTS & DESIGN",
+      "source_file": ".cursorrules",
+      "pillar": 1,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:1"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "BUILD ARCHITECTURE (Ponytail Rules)",
+      "source_file": ".cursorrules",
+      "pillar": 2,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:2"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "TRACING & EVALUATIONS",
+      "source_file": ".cursorrules",
+      "pillar": 3,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:3"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "TESTING GUARDRAILS",
+      "source_file": ".cursorrules",
+      "pillar": 4,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:4"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "OPERATIONS & SELF-IMPROVEMENT",
+      "source_file": ".cursorrules",
+      "pillar": 5,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:5"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "INTERFACE CONSTRAINTS (Caveman Compression)",
+      "source_file": ".cursorrules",
+      "pillar": 6,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:6"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "STACK-SPECIFIC RULES",
+      "source_file": ".cursorrules",
+      "pillar": 7,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:7"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "OBSERVABILITY WIRE",
+      "source_file": ".cursorrules",
+      "pillar": 8,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:8"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "MULTI-AGENT ORCHESTRATION",
+      "source_file": ".cursorrules",
+      "pillar": 9,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:9"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "COST-OPTIMISATION ROUTING",
+      "source_file": ".cursorrules",
+      "pillar": 10,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:10"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "UNTRUSTED CONTENT",
+      "source_file": ".cursorrules",
+      "pillar": 11,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:11"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "SECRETS AND CREDENTIALS",
+      "source_file": ".cursorrules",
+      "pillar": 12,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:12"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "GATE INTEGRITY",
+      "source_file": ".cursorrules",
+      "pillar": 13,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:13"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "FIXTURE AND BASELINE DRIFT",
+      "source_file": ".cursorrules",
+      "pillar": 14,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:14"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "AMBIGUOUS SIGNALS",
+      "source_file": ".cursorrules",
+      "pillar": 15,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:15"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "RECOVERY PATHS",
+      "source_file": ".cursorrules",
+      "pillar": 16,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:16"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "TS-REACT ADDENDUM",
+      "source_file": ".cursorrules",
+      "pillar": 17,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:17"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "DESIGN & VALIDATION PLAYBOOKS",
+      "source_file": ".cursorrules",
+      "pillar": 18,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "cursorrules:pillar:18"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "RFC 001 \u2014 scratch-ts-react-pnpm",
+      "source_file": ".agent-rfc/001-scaffold.md",
+      "pillar": null,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "rfc:001-scaffold.md"
+    },
+    {
+      "node_type": "Guardrail",
+      "title": "Scaffold scratch-ts-react-pnpm (no structural style yet)",
+      "source_file": ".agent-rfc/designs/scaffold.md",
+      "pillar": null,
+      "created_at": "2026-10-30T08:28:31Z",
+      "id": "rfc:designs/scaffold.md"
+    }
+  ],
+  "edges": [
+    {
+      "edge_type": "IMPORTS",
+      "source": "src/lib/sum.test.ts",
+      "target": "src/lib/sum.ts"
+    }
+  ]
+}

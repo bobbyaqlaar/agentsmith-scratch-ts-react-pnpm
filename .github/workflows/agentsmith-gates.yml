@@ -1,0 +1,50 @@
+# AgentSmith gates — written by `agentsmith tenant adopt` beside this
+# repository's own CI, which it leaves alone, and refreshed by `agentsmith sync`
+# (AgentSmith docs/process-gates.md).
+#
+# Design before code, review before merge — checked on every pushed commit. The
+# local commit-msg hook runs the same check, but only in a clone that armed it;
+# this is the check no clone can skip.
+#
+# It asks the gate provider this repository declares in
+# .agenticframework/providers.json, through gate contract 2's `ci` event
+# (AgentSmith contract/gate/v2/protocol.md): no framework file is checked out
+# and no framework path is run here. The step below is the provider's own CI
+# setup, pinned to a release — the `setup` the declaration names. A provider
+# that gives no decision fails the check; nothing falls back.
+#
+# The provider sends what it decided to the portal's Dev workspace when the two
+# secrets are set, and says in the report whether it did.
+name: "AgentSmith gates"
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  process-gates:
+    name: "Process gates (design + review)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: "bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith@64862bc02b1eb704098ff8e77fc8986ecde7f1ae"
+      - name: "Every gated commit has a design and a clean review"
+        # agentsmith:gate
+        env:
+          # A pull request's range is base..head; a push's is before..sha,
+          # where `before` is all zeros for a new branch (the provider then
+          # judges the head commit alone).
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          AGENTSMITH_PORTAL_URL: ${{ secrets.AGENTSMITH_PORTAL_URL }}
+          AGENTSMITH_PORTAL_INGEST_TOKEN: ${{ secrets.AGENTSMITH_PORTAL_INGEST_TOKEN }}
+        run: bash .githooks/process-gate ci --base "$BASE" --head "$HEAD_SHA"
+      - name: "The rule files say what the declared rules provider renders"
+        # agentsmith:gate
+        # The rules port (contract/rules/v1/protocol.md): CLAUDE.md, AGENTS.md and
+        # the rest are checked against the `rules` provider providers.json names.
+        # Drift, or a declared provider that gives no answer, fails; a repository
+        # that declares none is told so. `agentsmith sync` repairs drift.
+        run: bash .githooks/process-gate rules check

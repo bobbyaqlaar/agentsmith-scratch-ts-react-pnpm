@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# .githooks/commit-msg — the commit gate (AgentSmith docs/process-gates.md).
+# Copied verbatim into every repo that adopts the process gates.
+#
+# Armed per clone with:  git config core.hooksPath .githooks
+#
+# Arming it replaces the clone's hooks directory. In AgentSmith that is the
+# point (it is the framework, and hooks/post-commit pushes on its own); a tenant
+# keeps the hooks it had through .githooks/chain, which `tenant init` and
+# `tenant adopt` set up.
+#
+# The same check runs in CI over every pushed commit, so a clone without this
+# hook armed is caught there.
+set -euo pipefail
+
+msg_file="$1"
+hook_dir="$(git rev-parse --show-toplevel)/.githooks"
+# Below gate contract 3 the subject rule is applied here, as it always was. At 3
+# it is the provider's policy and is applied in its `commit` answer — this hook
+# only asks (contract/gate/v3/protocol.md); scripts/process_gate.py's
+# COMMIT_SUBJECT is the same rule, and a test pins the two equal.
+# Dropped only when the contract is plainly 3 or more: a launcher too old to know
+# `declared-contract` prints anything but a number, and that must keep the rule.
+contract="$("$hook_dir/process-gate" declared-contract 2>/dev/null || true)"
+case "$contract" in
+  [3-9]|[1-9][0-9]) ;;
+  *)
+    subject=$(grep -v '^#' "$msg_file" | head -n 1)
+    if [[ ! "$subject" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_/-]+\))?!?:\ .{1,72}$ ]]; then
+      echo "❌ commit blocked: subject must be a Conventional Commit, ≤72 chars after the type" >&2
+      echo "   got: \"$subject\"" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+# `git commit --amend` compares the index with the commit being REPLACED, so an
+# amend that changes only the message looked like a commit with no changes and
+# passed without trailers. Git does not tell a hook it is amending; the parent
+# git process's arguments do. /proc gives them exactly on Linux; elsewhere
+# `ps -ww` (unlimited width — plain `ps` truncated them at 80 columns on the
+# Linux runner, dropping a trailing --amend). If neither works the check
+# degrades to the plain commit's view; CI still checks the amended commit.
+parent_args() {
+  if [ -r "/proc/$PPID/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$PPID/cmdline"
+  else
+    ps -ww -o args= -p "$PPID" 2>/dev/null
+  fi
+}
+amend=()
+if parent_args | grep -qE '(^|[[:space:]])--amend([[:space:]]|$)'; then
+  amend=(--amend)
+fi
+
+"$hook_dir/process-gate" commit-msg "${amend[@]+"${amend[@]}"}" "$msg_file" || exit $?
+# The hook this repository ran before the gates, if any — after the gate, never
+# instead of it (.githooks/chain).
+[ -f "$hook_dir/chain" ] || exit 0
+exec bash "$hook_dir/chain" commit-msg "$msg_file"

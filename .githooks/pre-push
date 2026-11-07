@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — the bypass sweep (AgentSmith docs/process-gates.md).
+# Copied verbatim into every repo that adopts the process gates.
+#
+# The last local touchpoint before history leaves this machine: what a push
+# sends is exactly what the sweep has checked, so a bypass cannot reach the
+# remote while this hook is armed. CI is the layer behind it, and on a plan
+# without branch protection CI can only report (D3).
+#
+# It is fast: `.git/agentsmith/verified` records what has been checked, so a
+# sweep costs one pass over what is new. It also re-arms core.hooksPath when it
+# finds it unset in a repo that has adopted the gates.
+set -uo pipefail
+
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! "$hook_dir/process-gate" sweep; then
+  echo "❌ push blocked by the gate: see above for which commits, and why." >&2
+  echo "   Repair them (with AgentSmith: agentsmith gates repair), then push again." >&2
+  exit 1
+fi
+# The hook this repository ran before the gates, if any (.githooks/chain). The
+# sweep reads nothing from stdin, so the refs git sent are still there for it.
+[ -f "$hook_dir/chain" ] || exit 0
+exec bash "$hook_dir/chain" pre-push "$@"

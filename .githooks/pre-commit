@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — the bypass sweep (AgentSmith docs/process-gates.md).
+# Copied verbatim into every repo that adopts the process gates.
+#
+# Runs before commit-msg and checks something different: commit-msg judges the
+# commit being made, the sweep judges every commit already in this repo that
+# never met a gate — `--no-verify`, an unarmed clone, a rebase, a cherry-pick,
+# or git run from a shell no IDE gates.
+#
+# It is fast: `.git/agentsmith/verified` records what has been checked, so a
+# sweep costs one pass over what is new. It also re-arms core.hooksPath when it
+# finds it unset in a repo that has adopted the gates.
+set -uo pipefail
+
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --report: this hook runs before the message exists, and the commit being made
+# may BE the repair. commit-msg makes that call; this re-arms the hooks, moves
+# the verified pointer, and says what is pending.
+"$hook_dir/process-gate" sweep --report || exit $?
+# The hook this repository ran before the gates, if any (.githooks/chain).
+[ -f "$hook_dir/chain" ] || exit 0
+exec bash "$hook_dir/chain" pre-commit "$@"

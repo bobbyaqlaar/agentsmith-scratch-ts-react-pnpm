@@ -1,0 +1,6 @@
+# Tool allowlist (SEC-TOOL-001). Deny-by-default in strict mode.
+version: 1
+tools:
+  - name: example_tool
+    allowed: true
+    notes: Replace with tenant-registered tool names.

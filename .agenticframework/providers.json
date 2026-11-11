@@ -1,0 +1,37 @@
+{
+  "_about": "Who governs this repository. The hooks and CI ask this before anything else; `\"gate\": \"none\"` declares the repository ungoverned. See contract/gate/v3/protocol.md.",
+  "contract": 3,
+  "providers": {
+    "gate": {
+      "command": "agentsmith gate",
+      "version": "^4",
+      "setup": "bobbyaqlaar/AgentSmith/.github/actions/setup-agentsmith@1d986d05ff89e595ce9ed7a4bc9d7c494a3b2361"
+    },
+    "rules": {
+      "command": "agentsmith rules",
+      "version": "^4",
+      "contract": 1
+    },
+    "evals": {
+      "command": "agentsmith evals",
+      "version": "^4",
+      "contract": 1,
+      "not_gradable": {
+        "golden": "warn",
+        "fairness": "warn",
+        "hallucination": "warn"
+      },
+      "no_verdict": {
+        "golden": "warn",
+        "fairness": "warn",
+        "hallucination": "warn"
+      }
+    },
+    "security": {
+      "command": "agentsmith security",
+      "version": "^4",
+      "contract": 1,
+      "emitter": "none"
+    }
+  }
+}

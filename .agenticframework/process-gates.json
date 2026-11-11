@@ -1,0 +1,26 @@
+{
+  "_about": "What the process gates cover here \u2014 AgentSmith docs/process-gates.md. This file is gated itself, so switching a gate off takes a design and a review.",
+  "gated": [
+    "src/**",
+    "app/**",
+    "lib/**",
+    "scripts/**",
+    ".github/**",
+    ".githooks/**",
+    ".agenticframework/process-gates.json",
+    ".agenticframework/providers.json",
+    ".claude/settings.json",
+    ".cursor/hooks.json"
+  ],
+  "not_gated": [
+    "**.md",
+    ".agent-rfc/**",
+    "**/node_modules/**"
+  ],
+  "registry": "provider",
+  "artifacts": "off",
+  "pillars": "off",
+  "knowledge_graph": "off",
+  "levers_doc": "provider",
+  "design_checklist": "provider"
+}
